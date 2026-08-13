@@ -1,0 +1,3 @@
+ollama
+oracledb
+python-dotenv
