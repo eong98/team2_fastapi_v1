@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from survey.router import router as survey_router
+from survey.router import router as survey_router
+from shopmap.router import router as shopmap_router
 
 
 # FastAPI 앱 생성
@@ -30,6 +32,9 @@ app.add_middleware(
 
 # 설문조사 AI
 app.include_router(survey_router)
+
+# 매장 도면 AI
+app.include_router(shopmap_router)
 
 
 # ==============================
