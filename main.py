@@ -6,6 +6,7 @@ import uvicorn
 from survey.router import router as survey_router
 from survey.router import router as survey_router
 from shopmap.router import router as shopmap_router
+from cctv.router import router as shopmap_router
 
 
 # FastAPI 앱 생성
@@ -35,6 +36,9 @@ app.include_router(survey_router)
 
 # 매장 도면 AI
 app.include_router(shopmap_router)
+
+# CCTV 이슈, 손님 AI
+app.include_router(cctv_router)
 
 
 # ==============================
