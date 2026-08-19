@@ -31,7 +31,7 @@ def get_survey_answers(survey_no: int) -> list[dict]:
                 ON SA.RNO = SR.NO
             JOIN SURVEYQUESTION SQ
                 ON SQ.NO = SA.QNO
-            WHERE SR.SNO = :survey_no
+            WHERE SR.SVNO = :survey_no
             ORDER BY SR.NO, SQ.SEQNO
         """
 
@@ -126,7 +126,7 @@ def save_analysis(result: dict):
             """
             SELECT NO
             FROM SURVEYANALYSIS
-            WHERE SNO = :survey_no
+            WHERE SVNO = :survey_no
             """,
             survey_no=survey_no
         )
@@ -151,7 +151,7 @@ def save_analysis(result: dict):
                     POSITIVE_SUMMARY = :positive_summary,
                     NEGATIVE_SUMMARY = :negative_summary,
                     CDATE = :cdate
-                WHERE SNO = :survey_no
+                WHERE SVNO = :survey_no
                 """,
                 ai_score=result["aiScore"],
                 positive_rate=result["positiveRate"],
@@ -170,7 +170,7 @@ def save_analysis(result: dict):
                 """
                 INSERT INTO SURVEYANALYSIS (
                     NO,
-                    SNO,
+                    SVNO,
                     AISCORE,
                     POSITIVE_RATE,
                     NEUTRAL_RATE,
