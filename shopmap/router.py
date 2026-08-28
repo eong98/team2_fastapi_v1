@@ -29,8 +29,8 @@ class ShopMapIssueRequest(BaseModel):
     """
     shopmapno: int
     issue: str
-    xpos: float
-    ypos: float
+    xpos: float | None = None
+    ypos: float | None = None
 
 
 # ========================================
