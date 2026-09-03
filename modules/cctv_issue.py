@@ -1,124 +1,95 @@
+# -*- coding: utf-8 -*-
 """
-CCTV 이상행동 "설명 다듬기" 모듈.
+modules/cctv_issue.py
 
-⚠️ 이 모듈은 더 이상 유형(CODE)을 재분류하지 않는다.
+Jetson이 보낸 판단 근거(detail, 영어/규칙 기반 문구)를 관리자가 보기 좋은 한국어 문장(comnet)으로
+다듬는다. LLM 호출이 실패해도 detail을 그대로 comnet으로 써서 이슈 저장 자체는 계속 진행한다
+(안전 이벤트라 LLM 문제로 저장이 막히면 안 됨 - design 문서 아키텍처 결정 참고).
 
-기존 버전은 LLM한테 "폭행/쓰러짐 중 뭐야?"를 다시 물어봤는데, 서버 LLM은 텍스트만
-읽을 수 있고 영상을 볼 수 없어서 실제로는 Jetson이 보낸 문장을 그대로 다시 카테고리로
-욱여넣는 것에 불과했다(=진짜 재검증이 아니라 눈속임에 가까움). 영상 기반 판단은 오직
-Jetson(YOLO/휴리스틱)만 할 수 있으므로, CODE는 Jetson이 확정한 값을 그대로 신뢰한다.
-
-이 모듈이 실제로 하는 일은 두 가지뿐이다.
-  1) code가 CCTV_ISSUE_CODE(core/codes_cache.py)에 있는 유효한 값인지 검증한다 (Jetson 쪽 버그로 이상한 값이
-     오는 걸 막는 방어 로직).
-  2) Jetson이 보낸 근거 텍스트(detail)를 관리자가 CCTV_ISSUE 목록에서 바로 읽을
-     수 있는 자연스러운 한국어 문장(comnet)으로 다듬는다.
-
-reliability(신뢰도)는 LLM이 새로 매기지 않고 Jetson이 계산해서 보낸 confidence를
-그대로 사용한다(0~1 -> 0~100 변환만 함). 이 부분도 "서버가 재판단"하는 것처럼
-보이면 안 되기 때문이다.
-
-modules/issue.py(shopmap 도면용)와 달리, 여기서는 LLM 호출이 실패해도 이슈 등록
-자체가 막히면 안 된다(사람이 다칠 수 있는 안전 이벤트라서). 그래서 이 모듈에서
-예외가 나면 호출부(cctv/router.py)가 detail을 그대로 comnet으로 써서 저장을
-계속 진행하도록 설계돼 있다. 이 모듈 자체는 여전히 실패 시 예외를 던진다
-(그래야 호출부가 "LLM 문장 다듬기 실패"를 감지하고 폴백할 수 있다).
+Jetson이 이미 code(01/03/04)를 확정해서 보내주므로, 여기서는 code를 재분류하지 않는다.
 """
 
 import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from core.codes_cache import get_code_label, is_valid_code
 from core.llm_client import get_llm
-
 
 llm = get_llm()
 
+_CODE_LABELS = {
+    "01": "폭행",
+    "02": "기물파손",
+    "03": "쓰러짐/응급",
+    "04": "무단침입",
+    "05": "장시간체류",
+}
 
-def analyze_cctv_issue(code: str, detail: str, confidence: float) -> dict:
+
+def polish_detail_to_comnet(code: str, detail: str) -> str:
     """
-    Jetson이 이미 확정한 code/confidence를 검증하고, detail을 관리자용 문장으로 다듬는다.
-
-    반환:
-        {
-            "code": 입력받은 code 그대로 (검증만 함),
-            "reliability": confidence * 100 (0~100, Jetson 값 그대로),
-            "comnet": LLM이 다듬은 상황설명 문장
-        }
+    Jetson이 보낸 규칙 기반 판단 근거(detail)를 관리자용 한국어 문장(comnet)으로 다듬는다.
+    실패 시 detail을 그대로 반환한다(재판단 없음, 저장은 계속 진행).
     """
-
-    code = str(code).strip()
-
-    if not is_valid_code(code):
-        raise ValueError(f"Jetson이 보낸 code 값이 올바르지 않습니다: {code!r}")
 
     if not detail or not detail.strip():
-        raise ValueError("상황 설명(detail)이 없습니다.")
+        return f"{_CODE_LABELS.get(code, code)} 감지"
 
-    if not 0 <= confidence <= 1:
-        raise ValueError("confidence는 0~1 사이여야 합니다.")
-
-    label = get_code_label(code)
+    label = _CODE_LABELS.get(code, code)
 
     prompt = f"""
-당신은 무인매장 CCTV 이상행동 이벤트를 관리자용 문장으로 정리하는 AI입니다.
+당신은 무인매장 CCTV 이상행동 알림 문구를 다듬는 AI입니다.
 
-아래는 에지 디바이스(Jetson)의 AI 모델이 영상을 직접 분석해서 이미 "{label}"으로
-확정한 이벤트의 탐지 근거입니다. 당신은 이 유형을 다시 판단하지 않습니다.
-(영상을 볼 수 없으므로 유형 판단은 하지 않고, 아래 근거를 자연스러운 한국어
-문장으로 정리하는 역할만 합니다.)
+Jetson 엣지 장치가 이미 "{label}"(코드 {code})로 상황을 판단했습니다.
+아래는 그 판단의 근거(영어/규칙 기반 문구가 섞인 원문)입니다.
 
-확정된 유형: {label}
-탐지 근거: {detail}
-AI 신뢰도: {round(confidence * 100)}%
-
-comnet 작성 규칙:
-- 관리자가 목록에서 바로 읽을 수 있는 한두 문장으로 작성하세요.
-- "~것으로 감지되었습니다" 같은 표현으로, 이 문장이 AI 탐지 결과라는 걸 드러내세요.
-- 근거에 없는 내용을 추측해서 덧붙이지 마세요.
+중요:
+- 이미 확정된 상황 종류를 다시 판단하거나 바꾸지 마세요. 문장만 다듬으세요.
+- 관리자가 한눈에 상황을 이해할 수 있도록 자연스러운 한국어 한 문장으로 바꾸세요.
+- 과장하거나 새로운 정보를 추가하지 마세요.
 
 반드시 아래 JSON 형식만 반환하세요.
 
-{{
-  "comnet": "두 사람 간 급격한 신체 접촉과 움직임이 감지되어 폭행 상황으로 추정됩니다."
-}}
+{{"comnet": "여기에 한국어 문장"}}
 
 JSON 외의 설명이나 마크다운은 출력하지 마세요.
+
+판단 근거 원문:
+{detail}
 """
 
-    response = llm.invoke(
-        [
-            SystemMessage(
-                content=(
-                    "당신은 CCTV 이상행동 탐지 근거를 관리자용 한국어 문장으로 "
-                    "정리하는 AI입니다. 유형을 재판단하지 말고, 반드시 JSON 형식으로만 응답하세요."
-                )
-            ),
-            HumanMessage(content=prompt)
-        ]
-    )
+    try:
+        response = llm.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "당신은 CCTV 이상행동 알림 문구를 관리자용 한국어로 다듬는 AI입니다. "
+                        "상황 종류는 이미 확정되어 있으므로 재판단하지 말고 문장만 다듬으세요. "
+                        "반드시 JSON만 반환하세요."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
 
-    content = _remove_code_block(response.content.strip())
+        content = _remove_code_block(response.content.strip())
+        result = json.loads(content)
+        comnet = str(result.get("comnet", "")).strip()
 
-    result = json.loads(content)
+        if not comnet:
+            raise ValueError("comnet 값이 비어있습니다.")
 
-    comnet = str(result.get("comnet", "")).strip()
+        return comnet
 
-    if not comnet:
-        raise ValueError("AI가 상황설명(comnet)을 반환하지 않았습니다.")
-
-    return {
-        "code": code,
-        "reliability": round(confidence * 100),
-        "comnet": comnet,
-    }
+    except Exception as e:
+        # LLM 실패해도 이슈 저장은 계속 진행 (design 문서 아키텍처 결정)
+        print(f"[cctv_issue] comnet 다듬기 실패, 원문 사용: {e}")
+        return f"[{label}] {detail}"
 
 
 def _remove_code_block(content: str) -> str:
     if content.startswith("```json"):
         content = content[7:]
-
     elif content.startswith("```"):
         content = content[3:]
 

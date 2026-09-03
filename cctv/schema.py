@@ -1,79 +1,24 @@
-from pydantic import BaseModel, Field
+# -*- coding: utf-8 -*-
+"""cctv/schema.py - Jetson <-> FastAPI 요청/응답 형식"""
+
+from typing import List, Optional
+
+from pydantic import BaseModel
 
 
-# ========================================
-# CCTV_VISITOR - 손님(방문객) 입/퇴장
-# ========================================
+class CctvIssueReportRequest(BaseModel):
+    """Jetson 워커가 POST /api/cctv/issue/report 로 보내는 요청 본문."""
 
-class VisitorEnterRequest(BaseModel):
-    """
-    Jetson이 새로운 track_id를 처음 발견했을 때 호출.
-    """
-    cno: int = Field(..., description="CCTV번호 (CCTV.no)")
-    track_id: str = Field(..., description="AI 추적 ID (예: yolo track id)")
-
-
-class VisitorExitRequest(BaseModel):
-    """
-    Jetson이 특정 track_id를 일정 시간 이상 놓쳤을 때(퇴장 처리) 호출.
-    """
-    cno: int
-    track_id: str
+    cno: int                       # CCTV 번호 (CCTV_STREAM/CCTV 테이블의 CNO)
+    code: str                      # Jetson이 확정한 코드 ('01'|'03'|'04' 등, CCTV_ISSUE_CODE에 등록된 값)
+    detail: str                    # Jetson이 계산한 판단 근거 (comnet으로 다듬어지는 원문)
+    confidence: float              # 0~100, Jetson이 계산한 신뢰도 (서버는 재판단 없이 그대로 저장)
+    trackIds: List[int] = []       # 참고용 (관제 로그/디버깅), DB에는 저장하지 않음
+    detectedAt: Optional[float] = None  # 참고용 (unix timestamp), 서버 저장 시각(cdate)과는 별개
 
 
-class VisitorEventResponse(BaseModel):
+class CctvIssueReportResponse(BaseModel):
     no: int
-    cno: int
-    trackId: str
-    intime: str
-    outtime: str | None = None
-    staytime: int | None = None
-    state: int
-    loiterTriggered: bool = False
-
-
-# ========================================
-# CCTV_ISSUE - 이상행동 이슈
-# ========================================
-
-class IssueDetectRequest(BaseModel):
-    """
-    ⚠️ Jetson이 "무슨 유형인지"까지 확정해서 보낸다.
-
-    영상을 실제로 보는 건 Jetson뿐이고, 서버 LLM은 텍스트만 읽을 수 있어서
-    영상 기반 판단(폭행/쓰러짐 등 유형 확정)을 서버가 대신 내릴 수 없다.
-    그래서 CODE는 Jetson이 자기 모델/휴리스틱으로 이미 확정한 값을 그대로 받고,
-    서버는 그 CODE를 다시 판단하지 않는다(=재분류 금지).
-
-    서버가 하는 일은 딱 두 가지뿐이다.
-      1) code가 유효한 값인지 검증
-      2) detail(탐지 근거)을 관리자가 읽기 좋은 한국어 문장(comnet)으로 다듬기
-    """
-    cno: int = Field(..., description="CCTV번호")
-    code: str = Field(
-        ...,
-        description="Jetson이 확정한 문제유형코드 (01=폭행, 02=기물파손, 03=쓰러짐/응급, "
-                    "04=무단침입, 05=장시간체류). 서버는 이 값을 재분류하지 않는다.",
-    )
-    detail: str = Field(
-        ...,
-        description="탐지 근거를 사람이 읽을 수 있는 문장/데이터로 요약한 텍스트 "
-                    "(예: 'CAM 3 구역에서 두 사람의 바운딩박스 중심 거리 42px, 0.3초 유지')",
-    )
-    confidence: float = Field(
-        ..., ge=0, le=1,
-        description="Jetson이 자체 계산한 최종 신뢰도 (0~1). "
-                     "서버는 이 값을 그대로 신뢰도(reliability)로 사용하거나 참고용으로만 쓴다.",
-    )
-    track_ids: list[str] = Field(default_factory=list, description="관련된 track_id 목록(있으면)")
-
-
-class IssueResponse(BaseModel):
-    no: int
-    cno: int
     code: str
-    state: int
     comnet: str
     reliability: str
-    noticeyn: str
-    cdate: str
