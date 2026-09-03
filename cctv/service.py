@@ -14,6 +14,7 @@ NO 값이 서로 충돌하지 않는다.
 
 from datetime import datetime
 
+from core.codes_cache import is_valid_code
 from core.database import get_connection
 
 SEQ_CCTV_ISSUE = "SEQ_CCTV_ISSUE_NO"
@@ -23,12 +24,13 @@ SEQ_CCTV_VISITOR = "SEQ_CCTV_VISITOR_NO"
 # CCTV_ISSUE에도 "장시간체류" 이슈를 하나 만든다. (필요에 맞게 조정)
 LOITER_THRESHOLD_MINUTES = 30
 
-# CCTV_ISSUE.CODE 값 체계 (참조 테이블이 없어서 프론트(CctvIssue.ts CODE_LABELS)와
-# 동일하게 맞춰둠. 실제 코드 테이블을 만들면 이 dict 대신 DB 조회로 바꾸면 된다.)
-CODE_ASSAULT = "01"      # 폭행
-CODE_DAMAGE = "02"       # 기물파손
-CODE_FALL = "03"         # 쓰러짐/응급
-CODE_INTRUSION = "04"    # 무단침입
+# 장시간체류는 Jetson이 아니라 서버(visitor_exit)가 직접 판정하는 유일한 코드라서
+# (design 문서 "예외" 항목) 다른 코드처럼 Jetson이 값을 보내주지 않는다 - 그래서
+# 이것만 여기 상수로 남겨뒀다. CCTV_ISSUE_CODE 테이블의 "05"(장시간체류) 행과
+# 반드시 같은 값이어야 하며, create_issue()가 저장 시점에 CCTV_ISSUE_CODE 기준으로
+# 유효성을 한 번 더 검증한다(core/codes_cache.py). 나머지 01~04(폭행/기물파손/
+# 쓰러짐/무단침입)는 전부 Jetson이 보내주므로 여기 따로 상수를 두지 않는다
+# (예전엔 CODE_ASSAULT/CODE_DAMAGE/CODE_FALL/CODE_INTRUSION으로 중복 정의돼 있었음).
 CODE_LOITER = "05"       # 장시간체류
 
 
@@ -201,7 +203,15 @@ def create_issue(cno: int, code: str, comnet: str, reliability: float) -> dict:
     CCTV_ISSUE 신규 등록. STATE는 항상 0(미확인)으로 시작 - 오탐/정탐 처리는
     관리자가 대시보드(PUT /cctv_issue/update, Spring)에서 한다.
     NOTICEYN은 'N'으로 두고, 알림 발송 쪽(이은혜 담당 모듈)이 폴링해서 'Y'로 갱신하는 걸 전제로 함.
+
+    code는 이미 상위(router.py: modules.cctv_issue.analyze_cctv_issue, 또는 visitor_exit의
+    CODE_LOITER)에서 한 번 검증된 값이 들어오는 게 정상이지만, CCTV_ISSUE_CODE 자체가
+    실제 참조 무결성 제약(FK)까지는 아직 안 걸려있을 수 있어서 여기서도 한 번 더 막는다
+    (안전 이벤트라 저장을 완전히 막기보다는 경고만 남기고 계속 진행한다).
     """
+    if not is_valid_code(code):
+        print(f"[cctv/service.create_issue] 경고: CCTV_ISSUE_CODE에 없는 code={code!r} 저장 시도 (cno={cno})")
+
     connection = get_connection()
     cursor = connection.cursor()
 

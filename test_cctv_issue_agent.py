@@ -25,7 +25,8 @@ Jetson, FastAPI 서버 실행, Oracle DB 연결 전부 필요 없습니다.
 그대로 유지되는지(=재분류하지 않는지)를 확인하면 됩니다.
 """
 
-from modules.cctv_issue import analyze_cctv_issue, CODE_MAP
+from core.codes_cache import get_code_map
+from modules.cctv_issue import analyze_cctv_issue
 
 
 TEST_CASES = [
@@ -57,7 +58,8 @@ TEST_CASES = [
 
 
 def main():
-    print(f"CODE_MAP: {CODE_MAP}\n")
+    code_map = get_code_map()
+    print(f"CODE_MAP: {code_map}\n")
 
     for case in TEST_CASES:
         print("=" * 70)
@@ -73,7 +75,7 @@ def main():
                 confidence=case["confidence"],
             )
 
-            code_label = CODE_MAP.get(result["code"], "?")
+            code_label = code_map.get(result["code"], "?")
 
             print(
                 f"  -> code={result['code']}({code_label}), "

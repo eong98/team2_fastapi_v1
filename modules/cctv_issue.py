@@ -9,7 +9,7 @@ CCTV 이상행동 "설명 다듬기" 모듈.
 Jetson(YOLO/휴리스틱)만 할 수 있으므로, CODE는 Jetson이 확정한 값을 그대로 신뢰한다.
 
 이 모듈이 실제로 하는 일은 두 가지뿐이다.
-  1) code가 CODE_MAP에 있는 유효한 값인지 검증한다 (Jetson 쪽 버그로 이상한 값이
+  1) code가 CCTV_ISSUE_CODE(core/codes_cache.py)에 있는 유효한 값인지 검증한다 (Jetson 쪽 버그로 이상한 값이
      오는 걸 막는 방어 로직).
   2) Jetson이 보낸 근거 텍스트(detail)를 관리자가 CCTV_ISSUE 목록에서 바로 읽을
      수 있는 자연스러운 한국어 문장(comnet)으로 다듬는다.
@@ -29,22 +29,11 @@ import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from core.codes_cache import get_code_label, is_valid_code
 from core.llm_client import get_llm
 
 
 llm = get_llm()
-
-
-# ⚠️ 참조 테이블이 없어서 프론트(CctvIssue.ts CODE_LABELS), cctv/service.py의
-#    CODE_* 상수와 동일하게 맞춰둔 임시 매핑. 실제 코드 테이블이 생기면 이걸
-#    DB 조회로 바꾸고, 세 군데(프론트/서버 service/여기) 전부 같이 고쳐야 한다.
-CODE_MAP = {
-    "01": "폭행",
-    "02": "기물파손",
-    "03": "쓰러짐/응급",
-    "04": "무단침입",
-    "05": "장시간체류",
-}
 
 
 def analyze_cctv_issue(code: str, detail: str, confidence: float) -> dict:
@@ -61,7 +50,7 @@ def analyze_cctv_issue(code: str, detail: str, confidence: float) -> dict:
 
     code = str(code).strip()
 
-    if code not in CODE_MAP:
+    if not is_valid_code(code):
         raise ValueError(f"Jetson이 보낸 code 값이 올바르지 않습니다: {code!r}")
 
     if not detail or not detail.strip():
@@ -70,7 +59,7 @@ def analyze_cctv_issue(code: str, detail: str, confidence: float) -> dict:
     if not 0 <= confidence <= 1:
         raise ValueError("confidence는 0~1 사이여야 합니다.")
 
-    label = CODE_MAP[code]
+    label = get_code_label(code)
 
     prompt = f"""
 당신은 무인매장 CCTV 이상행동 이벤트를 관리자용 문장으로 정리하는 AI입니다.

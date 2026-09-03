@@ -13,7 +13,8 @@ from cctv.service import (
     visitor_enter,
     visitor_exit,
 )
-from modules.cctv_issue import CODE_MAP, analyze_cctv_issue
+from core.codes_cache import get_code_map, is_valid_code
+from modules.cctv_issue import analyze_cctv_issue
 
 
 router = APIRouter(
@@ -104,10 +105,10 @@ def detect_issue(request: IssueDetectRequest):
        안전 이벤트라서 "문장이 안 예뻐서 저장 실패"가 있으면 안 되기 때문에,
        실패 시 Jetson이 보낸 detail을 그대로 comnet으로 써서 저장한다.
     """
-    if request.code not in CODE_MAP:
+    if not is_valid_code(request.code):
         raise HTTPException(
             status_code=400,
-            detail=f"code 값이 올바르지 않습니다: {request.code!r} (허용값: {list(CODE_MAP)})"
+            detail=f"code 값이 올바르지 않습니다: {request.code!r} (허용값: {list(get_code_map())})"
         )
 
     try:
