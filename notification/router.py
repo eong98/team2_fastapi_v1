@@ -1,29 +1,41 @@
 from fastapi import APIRouter, HTTPException
 
-from notification.schema import (
-    NotificationCreateRequest,
-    NotificationCreateResponse,
-)
-from notification.service import create_notification
+from notification.schema import NotificationIssueRequest
+from notification.service import process_cctv_issue
 
-router = APIRouter(prefix="/api/notification", tags=["Notification AI"])
+router = APIRouter(prefix="/api/notification", tags=["Notification"])
 
 
-@router.post("/create", response_model=NotificationCreateResponse)
-def create(request: NotificationCreateRequest):
-    """AI 이슈맵 생성 후 알림 저장."""
+# ========================================
+# CCTV 이슈 알림 처리
+# ========================================
+
+
+@router.post("/issue")
+def process_issue_notification(request: NotificationIssueRequest):
+    """
+    CCTV 이슈 1건을 받아 알림 전체 처리를 시작한다.
+
+    전달 정보:
+    - CCTV 이슈번호
+    - CCTV 이슈 상태값
+    - 매장번호
+    - CCTV번호
+    - X / Y 좌표
+    """
 
     try:
-        return create_notification(
+        return process_cctv_issue(
             cino=request.cino,
-            mno=request.mno,
-            shopmapno=request.shopmapno,
-            issue=request.issue,
+            state=request.state,
+            sno=request.sno,
+            cno=request.cno,
             xpos=request.xpos,
             ypos=request.ypos,
-            lang=request.lang,
-            priority=request.priority,
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"알림 생성 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"알림 처리 실패: {str(e)}")
