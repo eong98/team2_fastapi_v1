@@ -25,6 +25,7 @@ _FALLBACK_CODES = {
     "03": {"codeName": "쓰러짐/응급", "severity": "높음", "useYn": "Y"},
     "04": {"codeName": "무단침입", "severity": "보통", "useYn": "Y"},
     "05": {"codeName": "장시간체류", "severity": "낮음", "useYn": "Y"},
+    "06": {"codeName": "화재", "severity": "높음", "useYn": "Y"},
 }
 
 
