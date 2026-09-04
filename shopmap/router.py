@@ -34,6 +34,7 @@ class ShopMapIssueRequest(BaseModel):
     """
 
     shopmapno: int
+    cino: int
     issue: str
 
     xpos: float | None = None
@@ -98,6 +99,7 @@ def generate_issue_shopmap(request: ShopMapIssueRequest):
 
         result = create_issue_map(
             shopmapno=request.shopmapno,
+            cino=request.cino,
             issue=request.issue,
             xpos=request.xpos,
             ypos=request.ypos,

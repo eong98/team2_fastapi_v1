@@ -260,6 +260,7 @@ def get_issue_map(
 
     result = create_issue_map(
         shopmapno=shopmapno,
+        cino=cino,
         issue=issue,
         xpos=xpos,
         ypos=ypos,
@@ -391,7 +392,7 @@ def create_notification(
                 CONTENT,
                 STATUS,
                 READYN,
-                AIMAPNO,
+                ASMNO,
                 CDATE
             )
             VALUES (

@@ -9,7 +9,6 @@ import numpy as np
 from core.database import get_connection
 from modules.issue import analyze_issue
 
-
 # ========================================
 # 저장 경로 설정
 # ========================================
@@ -29,25 +28,42 @@ def is_h200():
 
 if is_h200():
 
+    # 원본 매장 도면
     SHOPMAP_DIR = Path.home() / "allimio" / "shopmap"
+
+    # 이슈 위치가 표시된 결과 이미지
     AIISSUEMAP_DIR = Path.home() / "allimio" / "aiissuemap"
 
 else:
 
     SHOPMAP_DIR = Path(r"C:\kd\deploy\allimio\shopmap")
+
     AIISSUEMAP_DIR = Path(r"C:\kd\deploy\allimio\aiissuemap")
 
 
-SHOPMAP_DIR.mkdir(parents=True, exist_ok=True)
-AIISSUEMAP_DIR.mkdir(parents=True, exist_ok=True)
+SHOPMAP_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+AIISSUEMAP_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 
 # ========================================
 # 좌표 검사
 # ========================================
 
-def check_position(xpos, ypos):
-    """좌표가 없거나 잘못된 경우 0으로 실패 처리"""
+
+def check_position(
+    xpos,
+    ypos,
+):
+    """
+    0 ~ 1 비율 좌표인지 검사
+    """
 
     try:
 
@@ -63,53 +79,18 @@ def check_position(xpos, ypos):
         return xpos, ypos, True
 
     except (TypeError, ValueError):
+
         return 0, 0, False
 
 
 # ========================================
-# 회원번호 조회
+# AIISSUEMAP DB 저장
 # ========================================
 
-def get_member_no(shopmapno):
-    """매장 도면 번호로 점주 회원번호 조회"""
-
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-
-        cursor.execute(
-            """
-            SELECT S.MNO
-            FROM SHOPMAP SM
-            JOIN SHOP S
-              ON SM.SNO = S.NO
-            WHERE SM.NO = :shopmapno
-            """,
-            {
-                "shopmapno": shopmapno
-            },
-        )
-
-        row = cursor.fetchone()
-
-        if row is None:
-            raise ValueError("매장 정보를 찾을 수 없습니다.")
-
-        return row[0]
-
-    finally:
-        cursor.close()
-        conn.close()
-
-
-# ========================================
-# AI 이슈맵 DB 저장
-# ========================================
 
 def save_ai_issue_map(
-    mno,
     smno,
+    cino,
     xpos,
     ypos,
     color,
@@ -117,16 +98,21 @@ def save_ai_issue_map(
     status,
     err,
 ):
-    """AI 이슈맵 생성 결과 저장"""
+    """
+    원본 도면에 이슈 위치를 표시한
+    결과 정보를 AIISSUEMAP에 저장
+    """
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
 
-        cursor.execute(
-            "SELECT SEQ_AIISSUEMAP_NO.NEXTVAL FROM DUAL"
-        )
+        # AIISSUEMAP PK 생성
+        cursor.execute("""
+            SELECT SEQ_AIISSUEMAP_NO.NEXTVAL
+            FROM DUAL
+            """)
 
         aimapno = cursor.fetchone()[0]
 
@@ -134,8 +120,8 @@ def save_ai_issue_map(
             """
             INSERT INTO AIISSUEMAP (
                 NO,
-                MNO,
                 SMNO,
+                CINO,
                 XPOS,
                 YPOS,
                 COLOR,
@@ -146,8 +132,8 @@ def save_ai_issue_map(
             )
             VALUES (
                 :no,
-                :mno,
                 :smno,
+                :cino,
                 :xpos,
                 :ypos,
                 :color,
@@ -162,8 +148,8 @@ def save_ai_issue_map(
             """,
             {
                 "no": aimapno,
-                "mno": mno,
                 "smno": smno,
+                "cino": cino,
                 "xpos": xpos,
                 "ypos": ypos,
                 "color": color,
@@ -178,97 +164,32 @@ def save_ai_issue_map(
         return aimapno
 
     except Exception:
+
         conn.rollback()
         raise
 
     finally:
+
         cursor.close()
         conn.close()
-
-
-# ========================================
-# 기본 AI 도면 생성
-# ========================================
-
-def create_base_ai_map(
-    original_path,
-    output_path,
-):
-    """원본 도면을 기본 AI 도면으로 변환"""
-
-    image_data = np.fromfile(
-        str(original_path),
-        dtype=np.uint8,
-    )
-
-    image = cv2.imdecode(
-        image_data,
-        cv2.IMREAD_COLOR,
-    )
-
-    if image is None:
-        raise ValueError(
-            "원본 도면을 읽을 수 없습니다."
-        )
-
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY,
-    )
-
-    blurred = cv2.GaussianBlur(
-        gray,
-        (5, 5),
-        0,
-    )
-
-    edges = cv2.Canny(
-        blurred,
-        50,
-        150,
-    )
-
-    kernel = np.ones(
-        (2, 2),
-        np.uint8,
-    )
-
-    edges = cv2.dilate(
-        edges,
-        kernel,
-        iterations=1,
-    )
-
-    result = cv2.bitwise_not(edges)
-
-    success, encoded = cv2.imencode(
-        ".png",
-        result,
-    )
-
-    if not success:
-        raise ValueError(
-            "AI 도면 생성 실패"
-        )
-
-    encoded.tofile(
-        str(output_path)
-    )
 
 
 # ========================================
 # 원본 도면 등록
 # ========================================
 
+
 async def process_shopmap(
     shopmapno,
     file,
 ):
-    """원본 도면 저장 및 기본 AI 도면 생성"""
+    """
+    원본 매장 도면 저장
 
-    extension = Path(
-        file.filename
-    ).suffix.lower()
+    AI용 별도 도면은 생성하지 않는다.
+    """
+
+    extension = Path(file.filename).suffix.lower()
 
     if extension not in {
         ".jpg",
@@ -276,80 +197,184 @@ async def process_shopmap(
         ".png",
         ".webp",
     }:
-        raise ValueError(
-            "이미지 파일만 사용할 수 있습니다."
-        )
 
-    original_filename = (
-        f"shopmap_{shopmapno}{extension}"
-    )
+        raise ValueError("이미지 파일만 사용할 수 있습니다.")
 
-    original_path = (
-        SHOPMAP_DIR / original_filename
-    )
+    # 같은 SHOPMAP 번호의 기존 이미지 제거
+    for old_file in SHOPMAP_DIR.glob(f"shopmap_{shopmapno}.*"):
+
+        try:
+            old_file.unlink()
+
+        except Exception:
+            pass
+
+    original_filename = f"shopmap_{shopmapno}{extension}"
+
+    original_path = SHOPMAP_DIR / original_filename
 
     content = await file.read()
 
-    original_path.write_bytes(
-        content
-    )
-
-    ai_filename = (
-        f"ai_shopmap_{shopmapno}.png"
-    )
-
-    ai_path = (
-        AIISSUEMAP_DIR / ai_filename
-    )
-
-    create_base_ai_map(
-        original_path,
-        ai_path,
-    )
+    original_path.write_bytes(content)
 
     return {
         "success": True,
         "shopmapno": shopmapno,
-        "aiFile": ai_filename,
+        "file": original_filename,
     }
+
+
+# ========================================
+# 원본 도면 찾기
+# ========================================
+
+
+def find_original_shopmap(
+    shopmapno: int,
+):
+    """
+    SHOPMAP 번호를 기준으로
+    DB에서 원본 도면 파일명(FSAVED)을 조회한 뒤
+    실제 원본 이미지 파일 경로를 반환한다.
+
+    도면이 등록되지 않았거나
+    실제 파일이 존재하지 않는 경우에는
+    예외를 발생시키지 않고 None을 반환한다.
+
+    ※ 도면이 없는 경우 AIISSUEMAP은 생성하지 않는다.
+    """
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+
+        # ----------------------------------------
+        # SHOPMAP 번호로 원본 도면 파일명 조회
+        # ----------------------------------------
+
+        cursor.execute(
+            """
+            SELECT FSAVED
+            FROM SHOPMAP
+            WHERE NO = :shopmapno
+            """,
+            {
+                "shopmapno": shopmapno,
+            },
+        )
+
+        row = cursor.fetchone()
+
+        # ----------------------------------------
+        # 등록된 SHOPMAP 데이터가 없는 경우
+        # ----------------------------------------
+
+        if not row:
+            return None
+
+        fsaved = row[0]
+
+        # ----------------------------------------
+        # DB에 저장된 원본 파일명이 없는 경우
+        # ----------------------------------------
+
+        if not fsaved:
+            return None
+
+        # ----------------------------------------
+        # 실제 원본 도면 저장 경로 생성
+        # ----------------------------------------
+
+        if is_h200():
+
+            file_path = Path.home() / "allimio" / "shopmap" / "storage" / fsaved
+
+        else:
+
+            file_path = Path(r"C:\kd\deploy\allimio\shopmap\storage") / fsaved
+
+        # ----------------------------------------
+        # DB에는 파일명이 있지만
+        # 실제 파일이 없는 경우
+        # ----------------------------------------
+
+        if not file_path.exists():
+            return None
+
+        # ----------------------------------------
+        # 원본 도면 정상 조회
+        # ----------------------------------------
+
+        return file_path
+
+    finally:
+
+        cursor.close()
+        conn.close()
 
 
 # ========================================
 # HEX → BGR
 # ========================================
 
-def hex_to_bgr(color):
-    """HEX 색상을 OpenCV BGR로 변환"""
+
+def hex_to_bgr(
+    color,
+):
+    """
+    #FF0000 등의 HEX 색상을
+    OpenCV BGR 색상으로 변경
+    """
+
+    if color is None or not isinstance(color, str):
+
+        return (0, 0, 255)
 
     color = color.lstrip("#")
 
-    return (
-        int(color[4:6], 16),
-        int(color[2:4], 16),
-        int(color[0:2], 16),
-    )
+    if len(color) != 6:
+
+        return (0, 0, 255)
+
+    try:
+
+        return (
+            int(color[4:6], 16),
+            int(color[2:4], 16),
+            int(color[0:2], 16),
+        )
+
+    except ValueError:
+
+        return (0, 0, 255)
 
 
 # ========================================
-# AI 이슈맵 생성
+# 이슈 위치 이미지 생성
 # ========================================
+
 
 def create_issue_map(
     shopmapno,
+    cino,
     issue,
     xpos=None,
     ypos=None,
 ):
-    """AI 이슈맵 생성 후 DB 저장"""
+    """
+    원본 매장 도면에
+    CCTV 이슈 위치를 표시하고
+    AIISSUEMAP에 결과를 저장한다.
+    """
 
-    mno = get_member_no(shopmapno)
-
+    # ------------------------------------
     # 좌표 확인
-    xpos, ypos, position_ok = (
-        check_position(
-            xpos,
-            ypos,
-        )
+    # ------------------------------------
+
+    xpos, ypos, position_ok = check_position(
+        xpos,
+        ypos,
     )
 
     # ------------------------------------
@@ -359,8 +384,8 @@ def create_issue_map(
     if not position_ok:
 
         aimapno = save_ai_issue_map(
-            mno=mno,
             smno=shopmapno,
+            cino=cino,
             xpos=0,
             ypos=0,
             color=None,
@@ -372,31 +397,62 @@ def create_issue_map(
         return {
             "success": False,
             "aimapno": aimapno,
+            "smno": shopmapno,
+            "cino": cino,
             "status": 2,
+            "fsaved": None,
             "message": "좌표 추출 실패",
         }
 
     try:
 
-        # 기본 AI 도면
-        base_path = (
-            AIISSUEMAP_DIR
-            / f"ai_shopmap_{shopmapno}.png"
-        )
+        # ------------------------------------
+        # 원본 도면 찾기
+        # ------------------------------------
 
-        if not base_path.exists():
-            raise ValueError(
-                "기본 AI 도면이 없습니다."
-            )
+        original_path = find_original_shopmap(shopmapno)
 
+        # ------------------------------------
+        # 원본 도면이 없는 경우
+        # ------------------------------------
+        # 도면이 등록되지 않은 매장은
+        # 이슈 위치 이미지를 생성하지 않는다.
+        #
+        # AIISSUEMAP 데이터도 생성하지 않는다.
+        #
+        # 이후 NOTIFICATION 생성 시
+        # ASMNO는 NULL로 저장하면 된다.
+        # ------------------------------------
+
+        if original_path is None:
+
+            return {
+                "success": True,
+                "aimapno": None,
+                "smno": shopmapno,
+                "cino": cino,
+                "status": 1,
+                "fsaved": None,
+                "message": "등록된 매장 도면이 없어 이슈 위치 이미지를 생성하지 않았습니다.",
+            }
+
+        # ------------------------------------
         # 이슈 분석
+        # ------------------------------------
+
         result = analyze_issue(issue)
 
         color = result.get("color")
 
-        # 이미지 읽기
+        if not color:
+            color = "#FF0000"
+
+        # ------------------------------------
+        # 원본 이미지 읽기
+        # ------------------------------------
+
         image_data = np.fromfile(
-            str(base_path),
+            str(original_path),
             dtype=np.uint8,
         )
 
@@ -406,26 +462,26 @@ def create_issue_map(
         )
 
         if image is None:
-            raise ValueError(
-                "AI 도면을 읽을 수 없습니다."
-            )
+
+            raise ValueError("원본 매장 도면을 읽을 수 없습니다.")
 
         height, width = image.shape[:2]
 
-        # 비율 좌표 → 픽셀
-        point_x = int(
-            xpos * (width - 1)
-        )
+        # ------------------------------------
+        # 비율 좌표 → 실제 픽셀 좌표
+        # ------------------------------------
 
-        point_y = int(
-            ypos * (height - 1)
-        )
+        point_x = int(xpos * (width - 1))
 
-        marker_color = hex_to_bgr(
-            color
-        )
+        point_y = int(ypos * (height - 1))
 
+        marker_color = hex_to_bgr(color)
+
+        # ------------------------------------
         # 이슈 위치 표시
+        # ------------------------------------
+
+        # 흰색 외곽 원
         cv2.circle(
             image,
             (point_x, point_y),
@@ -434,6 +490,7 @@ def create_issue_map(
             -1,
         )
 
+        # 이슈 색상 점
         cv2.circle(
             image,
             (point_x, point_y),
@@ -442,44 +499,38 @@ def create_issue_map(
             -1,
         )
 
-        # 파일명
-        timestamp = datetime.now().strftime(
-            "%Y%m%d_%H%M%S"
-        )
+        # ------------------------------------
+        # 결과 파일명 생성
+        # ------------------------------------
 
-        filename = (
-            f"issue_shopmap_"
-            f"{shopmapno}_"
-            f"{timestamp}.png"
-        )
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        output_path = (
-            AIISSUEMAP_DIR
-            / filename
-        )
+        filename = f"issue_shopmap_" f"{shopmapno}_" f"{timestamp}.png"
 
-        # 이미지 저장
+        output_path = AIISSUEMAP_DIR / filename
+
+        # ------------------------------------
+        # 결과 이미지 저장
+        # ------------------------------------
+
         success, encoded = cv2.imencode(
             ".png",
             image,
         )
 
         if not success:
-            raise ValueError(
-                "이슈맵 이미지 생성 실패"
-            )
 
-        encoded.tofile(
-            str(output_path)
-        )
+            raise ValueError("이슈 위치 이미지 생성 실패")
+
+        encoded.tofile(str(output_path))
 
         # ------------------------------------
-        # 성공 DB 저장
+        # AIISSUEMAP DB 저장
         # ------------------------------------
 
         aimapno = save_ai_issue_map(
-            mno=mno,
             smno=shopmapno,
+            cino=cino,
             xpos=xpos,
             ypos=ypos,
             color=color,
@@ -491,6 +542,8 @@ def create_issue_map(
         return {
             "success": True,
             "aimapno": aimapno,
+            "smno": shopmapno,
+            "cino": cino,
             "status": 1,
             "fsaved": filename,
         }
@@ -498,12 +551,12 @@ def create_issue_map(
     except Exception as e:
 
         # ------------------------------------
-        # 이미지 생성 실패 DB 저장
+        # 처리 실패 정보 저장
         # ------------------------------------
 
         aimapno = save_ai_issue_map(
-            mno=mno,
             smno=shopmapno,
+            cino=cino,
             xpos=xpos,
             ypos=ypos,
             color=None,
@@ -515,24 +568,33 @@ def create_issue_map(
         return {
             "success": False,
             "aimapno": aimapno,
+            "smno": shopmapno,
+            "cino": cino,
             "status": 2,
+            "fsaved": None,
             "message": str(e),
         }
 
 
 # ========================================
-# AI 이슈맵 정보 조회
+# AIISSUEMAP 정보 조회
 # ========================================
 
+
 def get_ai_issue_map(
-    aimapno: int
+    aimapno: int,
 ) -> dict | None:
     """
-    AIISSUEMAP.NO를 이용해
-    AI 이슈맵 정보를 조회한다.
+    AIISSUEMAP.NO 기준으로
+    결과 이미지 정보를 조회한다.
 
-    React 알림 상세 화면에서
-    AIMAPNO → FSAVED를 찾기 위한 용도.
+    NOTIFICATION.ASMNO
+        ↓
+    AIISSUEMAP.NO
+        ↓
+    AIISSUEMAP.FSAVED
+        ↓
+    실제 이미지 조회
     """
 
     conn = get_connection()
@@ -544,8 +606,8 @@ def get_ai_issue_map(
             """
             SELECT
                 NO,
-                MNO,
                 SMNO,
+                CINO,
                 XPOS,
                 YPOS,
                 COLOR,
@@ -557,7 +619,7 @@ def get_ai_issue_map(
             WHERE NO = :aimapno
             """,
             {
-                "aimapno": aimapno
+                "aimapno": aimapno,
             },
         )
 
@@ -568,8 +630,8 @@ def get_ai_issue_map(
 
         return {
             "no": row[0],
-            "mno": row[1],
-            "smno": row[2],
+            "smno": row[1],
+            "cino": row[2],
             "xpos": row[3],
             "ypos": row[4],
             "color": row[5],
@@ -580,5 +642,6 @@ def get_ai_issue_map(
         }
 
     finally:
+
         cursor.close()
         conn.close()
