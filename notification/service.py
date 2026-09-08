@@ -3,6 +3,7 @@ from datetime import datetime
 from core.database import get_connection
 from shopmap.service import create_issue_map
 from delivery.email import send_notification_email
+from delivery.sms import send_notification_sms
 
 # ========================================
 # Sequence
@@ -72,6 +73,8 @@ def process_cctv_issue(
         )
 
         aimapno = issue_map.get("aimapno")
+        
+        fsaved = issue_map.get("fsaved")
 
         # ====================================
         # 3. 해당 매장 회원 조회
@@ -113,6 +116,7 @@ def process_cctv_issue(
                 send_member_notification(
                     notification=notification,
                     member=member,
+                    fsaved=fsaved,
                 )
 
                 success_count += 1
@@ -201,6 +205,10 @@ def get_issue_map(
         code = issue_row[0]
         issue = issue_row[1]
 
+        # Oracle CLOB이면 DB 연결이 살아 있을 때 문자열로 변환
+        if hasattr(issue, "read"):
+            issue = issue.read()
+
         # ------------------------------------
         # 매장 도면 번호 조회
         # ------------------------------------
@@ -272,6 +280,7 @@ def get_issue_map(
         "code": code,
         "issue": issue,
         "message": result.get("message"),
+        "fsaved": result.get("fsaved"),
     }
 
 
@@ -448,6 +457,7 @@ def create_notification(
 def send_member_notification(
     notification: dict,
     member: dict,
+    fsaved: str | None = None,
 ):
     """
     회원 한 명의 일반 알림 처리.
@@ -457,7 +467,7 @@ def send_member_notification(
 
     추후:
     EMAIL → Java
-    SMS   → Python
+    SMS   →  Python 가비아 API
     SENDLOG → EMAIL / SMS 발송 결과 저장
     """
 
@@ -476,7 +486,6 @@ def send_member_notification(
 
         # ====================================
         # 이메일 발송
-        # 추후 Java 연결
         # ====================================
 
         send_notification_email(
@@ -485,11 +494,30 @@ def send_member_notification(
 
         # ====================================
         # 문자 발송
-        # 추후 Python tool/sms_service.py 연결
+        # Python 가비아 API
         # ====================================
 
-        # send_sms(...)
+        phone = member.get("phone")
 
+        if phone:
+            phone = phone.replace("-", "").strip()
+
+            sms_message = notification["content"]
+
+            # 이슈 위치 이미지가 있는 경우 링크 추가
+            if fsaved:
+                image_url = (
+                    "http://10.1.205.118:11200/api/shopmap/image/"
+                    + fsaved
+                )
+
+                sms_message += f"\n이슈 위치: {image_url}"
+
+            send_notification_sms(
+                phone=phone,
+                message=sms_message,
+            )
+        
         # ------------------------------------
         # SENDING → SENT
         # ------------------------------------
