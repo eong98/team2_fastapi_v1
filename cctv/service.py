@@ -16,6 +16,11 @@ from core.codes_cache import is_valid_code
 from core.database import get_connection
 from modules.cctv_issue import polish_detail_to_comnet
 
+# CCTV_VISITOR.STATE
+VISITOR_STATE_IN = 0      # 입장중
+VISITOR_STATE_OUT = 1     # 정상퇴장
+VISITOR_STATE_LONG = 2    # 장시간체류
+
 
 def report_issue(cno: int, code: str, detail: str, confidence: float) -> dict:
     if not is_valid_code(code):
@@ -64,6 +69,106 @@ def _insert_issue(cno: int, code: str, comnet: str, reliability: str) -> int:
 
         connection.commit()
         return int(inserted_no)
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ===========================================================================
+# 손님(방문객) 입·퇴장 - CCTV_VISITOR
+# ===========================================================================
+
+def visitor_enter(cno: int, track_id: str, intime: str) -> dict:
+    """손님 입장. CCTV_VISITOR에 STATE=0(입장중)으로 INSERT한다.
+
+    같은 trackId가 이미 있으면 중복 INSERT하지 않고 기존 행을 돌려준다
+    (젯슨이 네트워크 오류로 재전송하는 경우 대비 - 멱등성 확보).
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            "SELECT NO FROM CCTV_VISITOR WHERE TRACK_ID = :track_id",
+            track_id=track_id,
+        )
+        row = cursor.fetchone()
+        if row:
+            return {"no": int(row[0]), "trackId": track_id, "state": VISITOR_STATE_IN}
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            """
+            INSERT INTO CCTV_VISITOR (
+                NO, CNO, TRACK_ID, INTIME, OUTTIME, STAYTIME, STATE, CDATE
+            ) VALUES (
+                SEQ_CCTV_VISITOR_NO.NEXTVAL, :cno, :track_id, :intime, NULL, NULL, :state, :cdate
+            )
+            """,
+            cno=cno,
+            track_id=track_id,
+            intime=intime,
+            state=VISITOR_STATE_IN,
+            cdate=now,
+        )
+
+        cursor.execute("SELECT SEQ_CCTV_VISITOR_NO.CURRVAL FROM DUAL")
+        inserted_no = int(cursor.fetchone()[0])
+
+        connection.commit()
+        return {"no": inserted_no, "trackId": track_id, "state": VISITOR_STATE_IN}
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def visitor_exit(cno: int, track_id: str, outtime: str,
+                 staytime: int, state: int = VISITOR_STATE_OUT) -> dict:
+    """손님 퇴장. 입장 때 만들어진 행을 찾아 OUTTIME/STAYTIME/STATE를 채운다.
+
+    이미 퇴장 처리된 행은 다시 건드리지 않는다(STATE=0 조건) - 재전송이 와도 안전하다.
+    """
+    if state not in (VISITOR_STATE_OUT, VISITOR_STATE_LONG):
+        raise ValueError(f"state는 1(정상퇴장) 또는 2(장시간체류)여야 합니다: {state}")
+
+    if staytime < 0:
+        raise ValueError("staytime은 0 이상이어야 합니다.")
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            """
+            UPDATE CCTV_VISITOR
+               SET OUTTIME = :outtime,
+                   STAYTIME = :staytime,
+                   STATE = :state
+             WHERE TRACK_ID = :track_id
+               AND STATE = :state_in
+            """,
+            outtime=outtime,
+            staytime=staytime,
+            state=state,
+            track_id=track_id,
+            state_in=VISITOR_STATE_IN,
+        )
+        updated = cursor.rowcount
+        connection.commit()
+
+        if updated == 0:
+            # 입장 기록이 없거나 이미 퇴장 처리됨. 워커는 계속 돌아야 하므로 예외를 던지지 않는다.
+            return {"no": 0, "trackId": track_id, "state": state}
+
+        cursor.execute(
+            "SELECT NO FROM CCTV_VISITOR WHERE TRACK_ID = :track_id",
+            track_id=track_id,
+        )
+        row = cursor.fetchone()
+        return {"no": int(row[0]) if row else 0, "trackId": track_id, "state": state}
 
     finally:
         cursor.close()

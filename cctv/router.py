@@ -3,8 +3,14 @@
 
 from fastapi import APIRouter, HTTPException
 
-from cctv.schema import CctvIssueReportRequest, CctvIssueReportResponse
-from cctv.service import report_issue
+from cctv.schema import (
+    CctvIssueReportRequest,
+    CctvIssueReportResponse,
+    CctvVisitorEnterRequest,
+    CctvVisitorExitRequest,
+    CctvVisitorResponse,
+)
+from cctv.service import report_issue, visitor_enter, visitor_exit
 
 router = APIRouter(
     prefix="/api/cctv",
@@ -35,3 +41,43 @@ def report(request: CctvIssueReportRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CCTV 이슈 저장 실패: {str(e)}")
+
+
+# ===========================================================================
+# 손님(방문객) 입·퇴장
+# ===========================================================================
+
+@router.post("/visitor/enter", response_model=CctvVisitorResponse)
+def enter(request: CctvVisitorEnterRequest):
+    """손님이 매장에 들어온 것을 CCTV_VISITOR에 기록한다(STATE=0 입장중)."""
+    try:
+        return visitor_enter(
+            cno=request.cno,
+            track_id=request.trackId,
+            intime=request.intime,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"손님 입장 저장 실패: {str(e)}")
+
+
+@router.post("/visitor/exit", response_model=CctvVisitorResponse)
+def exit_(request: CctvVisitorExitRequest):
+    """손님이 나간 것을 기록한다. 입장 행에 OUTTIME/STAYTIME/STATE를 채운다."""
+    try:
+        return visitor_exit(
+            cno=request.cno,
+            track_id=request.trackId,
+            outtime=request.outtime,
+            staytime=request.staytime,
+            state=request.state,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"손님 퇴장 저장 실패: {str(e)}")
