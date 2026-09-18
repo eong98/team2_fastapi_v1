@@ -16,13 +16,26 @@ from core.codes_cache import is_valid_code
 from core.database import get_connection
 from modules.cctv_issue import polish_detail_to_comnet
 
+# 알림을 보낼 최소 신뢰도. 이보다 낮으면 CCTV_ISSUE에는 저장하되 알림은 호출하지 않는다.
+#
+# 왜 저장은 하고 알림만 막는가: 낮은 신뢰도 이벤트도 나중에 튜닝할 때 근거 자료가 되고,
+# 관리자 화면에서 "이런 것도 잡혔다"를 확인할 수 있어야 한다. 다만 문자/메일로 사람을
+# 부르는 건 확실한 것만 해야 하므로 여기서 가른다.
+NOTIFY_MIN_CONFIDENCE = 60.0
+
 # CCTV_VISITOR.STATE
 VISITOR_STATE_IN = 0      # 입장중
 VISITOR_STATE_OUT = 1     # 정상퇴장
 VISITOR_STATE_LONG = 2    # 장시간체류
 
 
-def report_issue(cno: int, code: str, detail: str, confidence: float) -> dict:
+def report_issue(cno: int, code: str, detail: str, confidence: float,
+                 x: float = None, y: float = None) -> dict:
+    """Jetson이 확정한 이상행동 이벤트를 CCTV_ISSUE에 저장한다.
+
+    x, y는 Jetson이 호모그래피로 변환한 도면 좌표(0~1 비율)다. CCTV_ISSUE에는 저장하지 않고
+    (좌표 컬럼이 없다) AI 이슈 도면(AIISSUEMAP) 생성에 넘겨주는 값이다.
+    """
     if not is_valid_code(code):
         raise ValueError(f"등록되지 않았거나 사용 중지된 코드입니다: {code}")
 
@@ -34,13 +47,191 @@ def report_issue(cno: int, code: str, detail: str, confidence: float) -> dict:
 
     no = _insert_issue(cno=cno, code=code, comnet=comnet, reliability=reliability)
 
+    # 이 CCTV가 어느 매장인지. 알림/도면 쪽에서 필요하다(Jetson은 cno만 안다).
+    sno = find_shop_no(cno)
+
     return {
         "no": no,
         "code": code,
         "comnet": comnet,
         "reliability": reliability,
+        "cno": cno,
+        "sno": sno,
+        "x": x,
+        "y": y,
+        # 신뢰도 기준을 넘겼는지 - 라우터가 알림 호출 여부를 이 값으로 판단한다
+        "notify": confidence >= NOTIFY_MIN_CONFIDENCE,
     }
 
+
+def find_shop_no(cno: int):
+    """CCTV 번호로 그 CCTV가 속한 매장 번호(SHOP.NO = CCTV.SNO)를 찾는다.
+
+    Jetson은 자기가 담당하는 CCTV 번호만 알기 때문에, 매장 단위로 동작하는
+    알림/도면 쪽에 넘겨주려면 서버에서 한 번 조회해줘야 한다.
+    컬럼명이 다르면 이 쿼리만 고치면 된다. 못 찾으면 None.
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT SNO FROM CCTV WHERE CNO = :cno", cno=cno)
+        row = cursor.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    except Exception as e:
+        print(f"[cctv] 매장번호 조회 실패 (cno={cno}): {e}")
+        return None
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ===========================================================================
+# AI 이슈 도면 연동 (AIISSUEMAP) - 좌표를 넘겨주는 부분
+# ===========================================================================
+#
+# [역할 경계]
+# 이 함수는 "이슈가 발생했으니 이 좌표로 도면을 만들어 달라"고 호출해주는 것까지만 담당한다.
+# 실제 도면 생성/저장(shopmap 쪽)은 담당자가 별도로 구현/수정한다.
+#
+# 주의 1. shopmap.service.create_issue_map()은 내부에서 LLM(analyze_issue)을 호출해 느리다.
+#         그래서 라우터에서 BackgroundTasks로 호출해야 한다 - 직접 부르면 Jetson 응답이 늦어진다.
+# 주의 2. create_issue_map()은 xpos/ypos를 0~1로만 받는다. Jetson이 이미 정규화해서 보낸다.
+# 주의 3. 요청에 필요한 shopmapno(원본 매장 도면 번호)를 Jetson은 모른다(cno만 안다).
+#         아래 _find_shopmapno()가 cno -> shopmapno 조회를 담당하는데, 테이블 관계가 확정되면
+#         쿼리를 맞춰야 한다. 조회 실패 시 도면 생성만 건너뛰고 이슈 저장은 그대로 유지한다.
+
+def find_shopmapno(cno: int):
+    """CCTV 번호로 그 매장의 원본 도면 번호(SHOPMAP.NO)를 찾는다.
+
+    경로: CCTV.CNO -> CCTV.SNO(매장) -> SHOPMAP.SNO -> SHOPMAP.NO
+    테이블/컬럼명이 다르면 이 쿼리만 고치면 된다. 못 찾으면 None을 반환한다.
+    """
+    connection = get_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT sm.NO
+              FROM SHOPMAP sm
+              JOIN CCTV c ON c.SNO = sm.SNO
+             WHERE c.CNO = :cno
+             ORDER BY sm.NO DESC
+             FETCH FIRST 1 ROWS ONLY
+            """,
+            cno=cno,
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else None
+
+    except Exception as e:
+        # 테이블 구조가 아직 확정되지 않았을 수 있다. 이슈 저장을 막지 않도록 조용히 넘어간다.
+        print(f"[cctv] shopmapno 조회 실패 (cno={cno}): {e}")
+        return None
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def dispatch_issue(no: int, cno: int, sno, code: str, comnet: str,
+                   confidence: float, x=None, y=None) -> dict:
+    """이슈가 확정되어 저장된 뒤, 알림/도면 담당 쪽에 넘겨주는 단일 호출 지점.
+
+    라우터가 BackgroundTasks로 호출한다(아래 작업들이 LLM을 또 부르기 때문에 느림).
+
+    [역할 경계]
+    여기까지가 CCTV(장우원) 담당이다. 이 함수는 "이슈가 났고, 값은 이거다"를 넘겨주는 것까지만
+    하고, 실제 알림 발송과 도면 생성은 담당자가 구현/수정한다. 필요한 값이 더 있으면
+    아래 payload에 추가하면 된다.
+
+    넘기는 값:
+      no         - CCTV_ISSUE 번호 (방금 저장된 이슈의 PK)
+      cno        - CCTV 번호
+      sno        - 매장 번호
+      code       - 이상행동 코드 ('01'~'06')
+      comnet     - 관리자용 한국어 설명 (LLM이 다듬은 문장)
+      confidence - 신뢰도 0~100
+      x, y       - 도면 좌표 0~1 비율 (호모그래피 결과, 없으면 None)
+
+    실패해도 예외를 밖으로 던지지 않는다 - 이미 CCTV_ISSUE 저장은 끝났고,
+    후속 처리 실패가 안전 이벤트 기록을 되돌릴 이유는 없다.
+    """
+    payload = {
+        "no": no,
+        "cno": cno,
+        "sno": sno,
+        "code": code,
+        "comnet": comnet,
+        "confidence": confidence,
+        "x": x,
+        "y": y,
+    }
+    print(f"[cctv] 이슈 후속처리 요청: {payload}")
+
+    result = {"payload": payload}
+
+    # --- (1) AI 이슈 도면 생성 (AIISSUEMAP) ---
+    result["issueMap"] = _call_issue_map(cno=cno, code=code, comnet=comnet, x=x, y=y)
+
+    # --- (2) 알림 발송 (문자/메일) ---
+    # 담당자가 모듈을 만들면 여기서 호출하면 된다. 아직 없으면 조용히 넘어간다.
+    result["notify"] = _call_notify(payload)
+
+    return result
+
+
+def _call_issue_map(cno: int, code: str, comnet: str, x, y) -> dict:
+    """shopmap 쪽 AI 이슈 도면 생성 호출. 좌표가 없으면 건너뛴다."""
+    if x is None or y is None:
+        return {"skipped": "좌표 없음 (homography.json 미설정)"}
+
+    if not (0 <= x <= 1 and 0 <= y <= 1):
+        return {"skipped": f"좌표가 0~1 범위를 벗어남: ({x}, {y})"}
+
+    shopmapno = find_shopmapno(cno)
+    if shopmapno is None:
+        return {"skipped": f"cno={cno}에 연결된 매장 도면을 찾을 수 없음"}
+
+    try:
+        # 담당자가 관리하는 모듈이라 import를 함수 안에서 한다.
+        # (모듈이 없거나 시그니처가 바뀌어도 cctv 기능 전체가 죽지 않게 하려는 것)
+        from shopmap.service import create_issue_map
+
+        out = create_issue_map(shopmapno=shopmapno, issue=comnet, xpos=x, ypos=y)
+        print(f"[cctv] AI 이슈 도면 생성 완료 (code={code}, shopmapno={shopmapno})")
+        return out
+
+    except ImportError:
+        return {"skipped": "shopmap 모듈 없음"}
+
+    except Exception as e:
+        print(f"[cctv] AI 이슈 도면 생성 실패 (code={code}, shopmapno={shopmapno}): {e}")
+        return {"error": str(e)}
+
+
+def _call_notify(payload: dict) -> dict:
+    """알림(문자/메일) 발송 호출. 담당 모듈이 준비되면 자동으로 연결된다.
+
+    CCTV_ISSUE.NOTICEYN을 'N'으로 만들어 두고 담당자가 폴링하는 방식도 가능하므로,
+    모듈이 없는 것 자체는 오류가 아니다.
+    """
+    try:
+        from modules.notify import send_issue_notification   # 담당자 구현 예정
+    except ImportError:
+        return {"skipped": "알림 모듈 미구현 (NOTICEYN='N' 폴링 방식으로 처리 중일 수 있음)"}
+
+    try:
+        return send_issue_notification(**payload)
+    except Exception as e:
+        print(f"[cctv] 알림 발송 실패: {e}")
+        return {"error": str(e)}
+
+
+# ===========================================================================
+# CCTV_ISSUE INSERT
+# ===========================================================================
 
 def _insert_issue(cno: int, code: str, comnet: str, reliability: str) -> int:
     connection = get_connection()
