@@ -21,11 +21,11 @@ IS_H200 = os.path.exists("/home/d260730-c1-s2")
 if IS_H200:
     # H200 서버
     SHOPMAP_DIR = Path(
-        "/home/d260730-c1-s2/team2_jpa_v1/src/main/resources/static/shopmap/storage"
+        os.getenv("SHOPMAP_DIR", "/home/d260730-c1-s2/allimio/storage/shopmap")
     )
 
     AIISSUEMAP_DIR = Path(
-        "/home/d260730-c1-s2/team2_jpa_v1/src/main/resources/static/aiissuemap/storage"
+        os.getenv("AIISSUEMAP_DIR", "/home/d260730-c1-s2/allimio/storage/aiissuemap")
     )
 
 else:
@@ -36,7 +36,7 @@ else:
     AIISSUEMAP_DIR = BASE_DIR / "storage"
 
 
-# AI 이슈 도면 저장 폴더 생성
+# AI 이슈맵 저장 폴더가 없으면 생성
 AIISSUEMAP_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -64,33 +64,40 @@ def check_position(xpos: float | None, ypos: float | None):
 
 def get_issue_color(code: str) -> str:
     """
-    CCTV_ISSUE_CODE의 severity 값을 기준으로
-    AI 이슈 도면에 표시할 색상을 결정한다.
+    CCTV_ISSUE_CODE의 SEVERITY 값으로
+    AI 이슈맵에 표시할 점 색상을 결정한다.
+
+    3 = 높음 → 빨강
+    2 = 보통 → 주황
+    1 = 낮음 → 초록
     """
 
     codes = get_codes()
+
     issue_info = codes.get(code)
 
     if issue_info is None:
         raise ValueError(f"등록되지 않은 CCTV 이슈 코드입니다: {code}")
 
-    if issue_info.get("useYn", "Y") != "Y":
-        raise ValueError(f"사용 중지된 CCTV 이슈 코드입니다: {code}")
-
     severity = issue_info.get("severity")
 
+    # DB의 SEVERITY 값 기준
     color_map = {
-        "높음": "#FF0000",
-        "보통": "#FFA500",
-        "낮음": "#00C853",
+        3: "#FF0000",  # 높음
+        2: "#FFA500",  # 보통
+        1: "#00C853",  # 낮음
     }
 
-    color = color_map.get(severity)
-
-    if color is None:
+    # "3"처럼 문자열로 들어와도 처리
+    try:
+        severity = int(severity)
+    except (TypeError, ValueError):
         raise ValueError(f"지원하지 않는 이슈 위험도입니다: {severity}")
 
-    return color
+    if severity not in color_map:
+        raise ValueError(f"지원하지 않는 이슈 위험도입니다: {severity}")
+
+    return color_map[severity]
 
 
 # =========================================================

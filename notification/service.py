@@ -41,38 +41,111 @@ def process_cctv_issue(
     """
     CCTV 이슈 1건을 기준으로 회원을 조회하고
     회원별 NOTIFICATION 저장 및 문자/메일 발송을 처리한다.
-
-    asmno:
-    - AI 이슈 도면 생성 성공 → AIISSUEMAP.NO
-    - 도면 없음/생성 안 됨 → None
     """
 
-    # CCTV 이슈 내용 조회
-    issue = find_cctv_issue(
-        cino=cino,
-        cno=cno,
-    )
+    print("\n========================================")
+    print("[NOTIFICATION][START] CCTV 이슈 알림 처리 시작")
+    print("========================================")
+    print(f"- CCTV 이슈번호: {cino}")
+    print(f"- 매장번호: {sno}")
+    print(f"- CCTV번호: {cno}")
+    print(f"- AI 이슈맵번호: {asmno}")
 
-    # AI 이슈맵이 생성된 경우 파일명 조회
+    # ----------------------------------------
+    # CCTV 이슈 조회
+    # ----------------------------------------
+
+    try:
+        issue = find_cctv_issue(
+            cino=cino,
+            cno=cno,
+        )
+
+        print(
+            f"[NOTIFICATION][ISSUE][SUCCESS] "
+            f"CCTV 이슈 조회 성공 (code={issue['code']})"
+        )
+
+    except Exception as e:
+        print("\n[NOTIFICATION][ISSUE][FAIL] CCTV 이슈 조회 실패")
+        print(f"- CINO: {cino}")
+        print(f"- CNO: {cno}")
+        print(f"- 상세 오류: {e}")
+        raise
+
+    # ----------------------------------------
+    # AI 이슈맵 조회
+    # ----------------------------------------
+
     fsaved = find_ai_issue_map_file(asmno)
 
-    # 해당 매장의 점주 + 직원 조회
-    members = find_members(sno=sno)
+    if asmno is None:
+        print(
+            "[NOTIFICATION][AIMAP][SKIP] "
+            "AI 이슈맵 번호가 없습니다. 이슈 내용만 발송합니다."
+        )
+
+    elif fsaved:
+        print(
+            f"[NOTIFICATION][AIMAP][SUCCESS] "
+            f"AI 이슈맵 조회 성공 (asmno={asmno}, fsaved={fsaved})"
+        )
+
+    else:
+        print(
+            f"[NOTIFICATION][AIMAP][SKIP] "
+            f"사용 가능한 AI 이슈맵이 없습니다. "
+            f"(asmno={asmno})"
+        )
+
+    # ----------------------------------------
+    # 매장 회원 조회
+    # ----------------------------------------
+
+    try:
+        members = find_members(sno=sno)
+
+    except Exception as e:
+        print("\n[NOTIFICATION][MEMBER][FAIL] 매장 회원 DB 조회 실패")
+        print(f"- 매장번호: {sno}")
+        print(f"- 상세 오류: {e}")
+        raise
 
     if not members:
+        print("\n[NOTIFICATION][MEMBER][FAIL] 알림 대상 회원이 없습니다.")
+        print(f"- 매장번호: {sno}")
+        print("- 확인: SHOP.MNO / SHOP_MEMBER.SNO / MEMBER")
         raise ValueError("알림을 받을 매장 회원이 없습니다.")
+
+    print(f"[NOTIFICATION][MEMBER][SUCCESS] " f"알림 대상 {len(members)}명 조회")
 
     success_count = 0
     fail_count = 0
 
+    # ----------------------------------------
     # 회원별 알림 처리
+    # ----------------------------------------
+
     for member in members:
+
+        mno = member["mno"]
+
+        print("\n----------------------------------------")
+        print(f"[NOTIFICATION][MEMBER][START] MNO={mno}")
+        print("----------------------------------------")
+
         try:
             notification = create_notification(
                 cino=cino,
-                mno=member["mno"],
+                mno=mno,
                 asmno=asmno,
                 content=issue["content"],
+            )
+
+            print(
+                f"[NOTIFICATION][DB][SUCCESS] "
+                f"NOTIFICATION 저장 완료 "
+                f"(nno={notification['no']}, mno={mno})"
             )
 
             send_member_notification(
@@ -83,17 +156,40 @@ def process_cctv_issue(
 
             success_count += 1
 
+            print(f"[NOTIFICATION][MEMBER][SUCCESS] " f"MNO={mno} 알림 처리 완료")
+
         except Exception as e:
             fail_count += 1
 
-            print(f"[notification] " f"MNO={member['mno']} 알림 처리 실패: {e}")
+            print("\n[NOTIFICATION][MEMBER][FAIL] 회원 알림 처리 실패")
+            print(f"- 회원번호: {mno}")
+            print(f"- 상세 오류: {e}")
 
-    # 모든 회원의 알림 처리가 성공한 경우
+    # ----------------------------------------
+    # CCTV 알림 처리 여부
+    # ----------------------------------------
+
     if fail_count == 0:
         update_cctv_notice(
             cino=cino,
             noticeyn="Y",
         )
+
+        print(f"[NOTIFICATION][CCTV][SUCCESS] " f"CCTV_ISSUE.NOTICEYN=Y (cino={cino})")
+
+    else:
+        print(
+            f"[NOTIFICATION][CCTV][SKIP] "
+            f"발송 실패 {fail_count}건이 있어 "
+            f"NOTICEYN을 Y로 변경하지 않습니다."
+        )
+
+    print("\n========================================")
+    print("[NOTIFICATION][END] CCTV 이슈 알림 처리 종료")
+    print(f"- 대상 회원: {len(members)}명")
+    print(f"- 성공: {success_count}명")
+    print(f"- 실패: {fail_count}명")
+    print("========================================\n")
 
     return {
         "cino": cino,
@@ -138,7 +234,9 @@ def find_cctv_issue(
         row = cursor.fetchone()
 
         if row is None:
-            raise ValueError("CCTV 이슈 정보를 찾을 수 없습니다.")
+            raise ValueError(
+                f"CCTV 이슈 정보를 찾을 수 없습니다. " f"(cino={cino}, cno={cno})"
+            )
 
         code = row[0]
         content = row[1]
@@ -151,6 +249,13 @@ def find_cctv_issue(
             "code": code,
             "content": content or "",
         }
+
+    except Exception as e:
+        print("[NOTIFICATION][DB][FAIL] CCTV_ISSUE 조회 오류")
+        print(f"- CINO: {cino}")
+        print(f"- CNO: {cno}")
+        print(f"- 상세 오류: {e}")
+        raise
 
     finally:
         cursor.close()
@@ -165,12 +270,7 @@ def find_cctv_issue(
 def find_ai_issue_map_file(
     asmno: int | None,
 ) -> str | None:
-    """
-    AIISSUEMAP.NO로 생성된 이미지 파일명을 조회한다.
-
-    asmno가 None이면 도면이 없는 알림이므로
-    파일 조회 없이 None을 반환한다.
-    """
+    """AIISSUEMAP.NO로 생성된 이미지 파일명을 조회한다."""
 
     if asmno is None:
         return None
@@ -194,9 +294,20 @@ def find_ai_issue_map_file(
         row = cursor.fetchone()
 
         if row is None:
+            print(
+                f"[NOTIFICATION][AIMAP][NOT_FOUND] "
+                f"정상 생성된 AI 이슈맵을 찾을 수 없습니다. "
+                f"(asmno={asmno})"
+            )
             return None
 
         return row[0]
+
+    except Exception as e:
+        print("[NOTIFICATION][AIMAP][DB_FAIL] AIISSUEMAP 조회 실패")
+        print(f"- ASMNO: {asmno}")
+        print(f"- 상세 오류: {e}")
+        return None
 
     finally:
         cursor.close()
@@ -209,15 +320,7 @@ def find_ai_issue_map_file(
 
 
 def find_members(sno: int) -> list[dict]:
-    """
-    해당 매장의 점주 + 소속 직원을 조회한다.
-
-    점주:
-    SHOP.MNO
-
-    직원:
-    SHOP_MEMBER.SNO 기준 회원 조회
-    """
+    """해당 매장의 점주 + 소속 직원을 조회한다."""
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -263,6 +366,12 @@ def find_members(sno: int) -> list[dict]:
             for row in rows
         ]
 
+    except Exception as e:
+        print("[NOTIFICATION][MEMBER][DB_FAIL] 회원 조회 SQL 실패")
+        print(f"- 매장번호: {sno}")
+        print(f"- 상세 오류: {e}")
+        raise
+
     finally:
         cursor.close()
         conn.close()
@@ -279,19 +388,12 @@ def create_notification(
     asmno: int | None,
     content: str,
 ) -> dict:
-    """
-    회원 한 명당 NOTIFICATION 1건 저장.
-
-    ASMNO:
-    AI 이슈 도면 있음 → AIISSUEMAP.NO
-    AI 이슈 도면 없음 → NULL
-    """
+    """회원 한 명당 NOTIFICATION 1건 저장."""
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
-        # 알림번호 생성
         cursor.execute(f"""
             SELECT {SEQ_NOTIFICATION}.NEXTVAL
             FROM DUAL
@@ -299,7 +401,6 @@ def create_notification(
 
         nno = int(cursor.fetchone()[0])
 
-        # 회원별 알림 저장
         cursor.execute(
             """
             INSERT INTO NOTIFICATION (
@@ -349,8 +450,15 @@ def create_notification(
             "status": STATUS_READY,
         }
 
-    except Exception:
+    except Exception as e:
         conn.rollback()
+
+        print("\n[NOTIFICATION][DB][FAIL] NOTIFICATION 저장 실패")
+        print(f"- CINO: {cino}")
+        print(f"- MNO: {mno}")
+        print(f"- ASMNO: {asmno}")
+        print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
@@ -368,17 +476,13 @@ def send_member_notification(
     member: dict,
     fsaved: str | None = None,
 ):
-    """
-    회원 한 명의 이메일/문자 알림을 발송한다.
-
-    도면 있음:
-    이메일 + 문자에 AI 이슈맵 연결
-
-    도면 없음:
-    이슈 내용만 발송
-    """
+    """회원 한 명의 이메일/문자 알림을 발송한다."""
 
     nno = notification["no"]
+    mno = member["mno"]
+
+    email = member.get("email")
+    phone = member.get("phone")
 
     try:
         # READY → SENDING
@@ -387,28 +491,46 @@ def send_member_notification(
             status=STATUS_SENDING,
         )
 
+        print(f"[NOTIFICATION][STATUS] " f"NNO={nno} READY → SENDING")
+
         # ====================================
         # 이메일 발송
         # ====================================
 
-        # Java 이메일 서비스에서 NOTIFICATION.NO를 조회하여
-        # CINO / ASMNO 등의 알림 정보를 사용한다.
-        send_notification_email(
-            notification_no=nno,
-        )
+        email_success = False
+
+        if email and str(email).strip():
+
+            print(f"[NOTIFICATION][EMAIL][START] " f"MNO={mno}, NNO={nno}")
+
+            email_success = send_notification_email(
+                notification_no=nno,
+            )
+
+            if email_success:
+                print(f"[NOTIFICATION][EMAIL][SUCCESS] " f"MNO={mno}")
+            else:
+                print(f"[NOTIFICATION][EMAIL][FAIL] " f"MNO={mno}")
+
+        else:
+            print(
+                f"[NOTIFICATION][EMAIL][SKIP] "
+                f"MNO={mno} DB에 이메일 주소가 없습니다."
+            )
 
         # ====================================
         # 문자 발송
         # ====================================
 
-        phone = member.get("phone")
+        sms_success = False
 
-        if phone:
-            phone = phone.replace("-", "").strip()
+        if phone and str(phone).strip():
+
+            phone = str(phone).replace("-", "").strip()
 
             sms_message = notification["content"]
 
-            # AI 이슈 도면이 존재하는 경우 이미지 조회 주소 추가
+            # AI 이슈맵 존재 시 이미지 조회 주소 추가
             if fsaved:
                 image_url = (
                     "http://10.1.205.118:11200" "/api/aiissuemap/image/" + fsaved
@@ -416,23 +538,69 @@ def send_member_notification(
 
                 sms_message += f"\n이슈 위치: {image_url}"
 
-            send_notification_sms(
+            print(f"[NOTIFICATION][SMS][START] " f"MNO={mno}, NNO={nno}")
+
+            sms_success = send_notification_sms(
                 phone=phone,
                 message=sms_message,
             )
 
-        # SENDING → SENT
-        update_notification_status(
-            nno=nno,
-            status=STATUS_SENT,
-        )
+            if sms_success:
+                print(f"[NOTIFICATION][SMS][SUCCESS] " f"MNO={mno}")
+            else:
+                print(f"[NOTIFICATION][SMS][FAIL] " f"MNO={mno}")
 
-    except Exception:
-        # 발송 실패
+        else:
+            print(f"[NOTIFICATION][SMS][SKIP] " f"MNO={mno} DB에 전화번호가 없습니다.")
+
+        # ====================================
+        # 최종 발송 결과 판단
+        # ====================================
+
+        if email_success or sms_success:
+
+            update_notification_status(
+                nno=nno,
+                status=STATUS_SENT,
+            )
+
+            print(f"[NOTIFICATION][STATUS] " f"NNO={nno} SENDING → SENT")
+
+            return {
+                "success": True,
+                "email": email_success,
+                "sms": sms_success,
+            }
+
+        # 이메일과 문자 모두 실패 또는 발송 불가
         update_notification_status(
             nno=nno,
             status=STATUS_FAILED,
         )
+
+        print(f"[NOTIFICATION][STATUS] " f"NNO={nno} SENDING → FAILED")
+
+        raise RuntimeError(
+            f"이메일과 문자 발송이 모두 실패했습니다. " f"(mno={mno}, nno={nno})"
+        )
+
+    except Exception as e:
+
+        try:
+            update_notification_status(
+                nno=nno,
+                status=STATUS_FAILED,
+            )
+        except Exception as status_error:
+            print(
+                f"[NOTIFICATION][STATUS][FAIL] "
+                f"FAILED 상태 변경 실패: {status_error}"
+            )
+
+        print("\n[NOTIFICATION][SEND][FAIL] 회원 알림 발송 실패")
+        print(f"- 회원번호: {mno}")
+        print(f"- 알림번호: {nno}")
+        print(f"- 상세 오류: {e}")
 
         raise
 
@@ -464,10 +632,19 @@ def update_notification_status(
             },
         )
 
+        if cursor.rowcount == 0:
+            raise ValueError(f"NOTIFICATION을 찾을 수 없습니다. (nno={nno})")
+
         conn.commit()
 
-    except Exception:
+    except Exception as e:
         conn.rollback()
+
+        print("[NOTIFICATION][STATUS][DB_FAIL] 상태 변경 실패")
+        print(f"- NNO: {nno}")
+        print(f"- 변경 상태: {status}")
+        print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
@@ -522,8 +699,14 @@ def save_send_log(
 
         conn.commit()
 
-    except Exception:
+    except Exception as e:
         conn.rollback()
+
+        print("[NOTIFICATION][SENDLOG][FAIL] SENDLOG 저장 실패")
+        print(f"- NNO: {nno}")
+        print(f"- CHANNEL: {channel}")
+        print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
@@ -540,12 +723,7 @@ def update_cctv_notice(
     cino: int,
     noticeyn: str,
 ):
-    """
-    CCTV_ISSUE.NOTICEYN 변경.
-
-    N = 미처리
-    Y = 처리 완료
-    """
+    """CCTV_ISSUE.NOTICEYN 변경."""
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -563,10 +741,19 @@ def update_cctv_notice(
             },
         )
 
+        if cursor.rowcount == 0:
+            raise ValueError(f"CCTV_ISSUE를 찾을 수 없습니다. (cino={cino})")
+
         conn.commit()
 
-    except Exception:
+    except Exception as e:
         conn.rollback()
+
+        print("[NOTIFICATION][CCTV][DB_FAIL] NOTICEYN 변경 실패")
+        print(f"- CINO: {cino}")
+        print(f"- NOTICEYN: {noticeyn}")
+        print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
