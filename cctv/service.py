@@ -74,7 +74,7 @@ def find_shop_no(cno: int):
     connection = get_connection()
     cursor = connection.cursor()
     try:
-        cursor.execute("SELECT SNO FROM CCTV WHERE CNO = :cno", cno=cno)
+        cursor.execute("SELECT SNO FROM CCTV WHERE no = :cno", cno=cno)
         row = cursor.fetchone()
         return int(row[0]) if row and row[0] is not None else None
 
@@ -116,7 +116,7 @@ def find_shopmapno(cno: int):
             SELECT sm.NO
               FROM SHOPMAP sm
               JOIN CCTV c ON c.SNO = sm.SNO
-             WHERE c.CNO = :cno
+             WHERE c.NO = :cno
              ORDER BY sm.NO DESC
              FETCH FIRST 1 ROWS ONLY
             """,
@@ -145,7 +145,7 @@ def dispatch_issue(no: int, cno: int, sno, code: str, comnet: str,
     여기까지가 CCTV(장우원) 담당이다. 이 함수는 "이슈가 났고, 값은 이거다"를 넘겨주는 것까지만
     하고, 실제 알림 발송과 도면 생성은 담당자가 구현/수정한다. 필요한 값이 더 있으면
     아래 payload에 추가하면 된다.
-
+f
     넘기는 값:
       no         - CCTV_ISSUE 번호 (방금 저장된 이슈의 PK)
       cno        - CCTV 번호
