@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from survey.router import router as survey_router
-from shopmap.router import router as shopmap_router
+from aiissuemap.router import router as shopmap_router
 from cctv.router import router as cctv_router
 from notification.router import router as notification_router
 

@@ -3,7 +3,10 @@ from fastapi import APIRouter, HTTPException
 from notification.schema import NotificationIssueRequest
 from notification.service import process_cctv_issue
 
-router = APIRouter(prefix="/api/notification", tags=["Notification"])
+router = APIRouter(
+    prefix="/api/notification",
+    tags=["Notification"],
+)
 
 
 # ========================================
@@ -12,30 +15,32 @@ router = APIRouter(prefix="/api/notification", tags=["Notification"])
 
 
 @router.post("/issue")
-def process_issue_notification(request: NotificationIssueRequest):
+def process_issue_notification(
+    request: NotificationIssueRequest,
+):
     """
-    CCTV 이슈 1건을 받아 알림 전체 처리를 시작한다.
+    CCTV 이슈 1건의 알림을 처리한다.
 
-    전달 정보:
-    - CCTV 이슈번호
-    - CCTV 이슈 상태값
-    - 매장번호
-    - CCTV번호
-    - X / Y 좌표
+    AI 이슈맵은 CCTV 후속 처리 단계에서 이미 생성되며,
+    Notification에서는 전달받은 ASMNO를 사용한다.
     """
 
     try:
         return process_cctv_issue(
             cino=request.cino,
-            state=request.state,
             sno=request.sno,
             cno=request.cno,
-            xpos=request.xpos,
-            ypos=request.ypos,
+            asmno=request.asmno,
         )
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"알림 처리 실패: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"알림 처리 실패: {str(e)}",
+        )

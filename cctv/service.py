@@ -24,13 +24,19 @@ from modules.cctv_issue import polish_detail_to_comnet
 NOTIFY_MIN_CONFIDENCE = 60.0
 
 # CCTV_VISITOR.STATE
-VISITOR_STATE_IN = 0      # 입장중
-VISITOR_STATE_OUT = 1     # 정상퇴장
-VISITOR_STATE_LONG = 2    # 장시간체류
+VISITOR_STATE_IN = 0  # 입장중
+VISITOR_STATE_OUT = 1  # 정상퇴장
+VISITOR_STATE_LONG = 2  # 장시간체류
 
 
-def report_issue(cno: int, code: str, detail: str, confidence: float,
-                 x: float = None, y: float = None) -> dict:
+def report_issue(
+    cno: int,
+    code: str,
+    detail: str,
+    confidence: float,
+    x: float = None,
+    y: float = None,
+) -> dict:
     """Jetson이 확정한 이상행동 이벤트를 CCTV_ISSUE에 저장한다.
 
     x, y는 Jetson이 호모그래피로 변환한 도면 좌표(0~1 비율)다. CCTV_ISSUE에는 저장하지 않고
@@ -173,65 +179,81 @@ f
     result = {"payload": payload}
 
     # --- (1) AI 이슈 도면 생성 (AIISSUEMAP) ---
-    result["issueMap"] = _call_issue_map(cno=cno, code=code, comnet=comnet, x=x, y=y)
+    result["issueMap"] = _call_issue_map(no=no, code=code, sno=sno, x=x, y=y)
+
+    # 생성된 AIISSUEMAP.NO를 알림에 전달
+    # 도면이 없거나 생성되지 않은 경우 None
+    payload["asmno"] = result["issueMap"].get("aimapno")
 
     # --- (2) 알림 발송 (문자/메일) ---
-    # 담당자가 모듈을 만들면 여기서 호출하면 된다. 아직 없으면 조용히 넘어간다.
     result["notify"] = _call_notify(payload)
 
     return result
 
 
-def _call_issue_map(cno: int, code: str, comnet: str, x, y) -> dict:
-    """shopmap 쪽 AI 이슈 도면 생성 호출. 좌표가 없으면 건너뛴다."""
+def _call_issue_map(no: int, code: str, sno: int, x, y) -> dict:
+    """CCTV 이슈 정보를 AIISSUEMAP으로 전달하여 이슈 위치가 표시된 도면을 생성한다."""
+
+    # 좌표가 없으면 도면 생성을 하지 않음
     if x is None or y is None:
         return {"skipped": "좌표 없음 (homography.json 미설정)"}
 
+    # x, y는 도면 기준 0~1 비율 좌표만 허용
     if not (0 <= x <= 1 and 0 <= y <= 1):
         return {"skipped": f"좌표가 0~1 범위를 벗어남: ({x}, {y})"}
 
-    shopmapno = find_shopmapno(cno)
-    if shopmapno is None:
-        return {"skipped": f"cno={cno}에 연결된 매장 도면을 찾을 수 없음"}
-
     try:
-        # 담당자가 관리하는 모듈이라 import를 함수 안에서 한다.
-        # (모듈이 없거나 시그니처가 바뀌어도 cctv 기능 전체가 죽지 않게 하려는 것)
-        from shopmap.service import create_issue_map
+        # AIISSUEMAP 담당 모듈 호출
+        # CCTV에서는 no/code/sno/x/y만 전달하고, 도면 조회와 색상 결정은 AIISSUEMAP에서 처리
+        from aiissuemap.service import process_cctv_issue_map
 
-        out = create_issue_map(shopmapno=shopmapno, issue=comnet, xpos=x, ypos=y)
-        print(f"[cctv] AI 이슈 도면 생성 완료 (code={code}, shopmapno={shopmapno})")
+        out = process_cctv_issue_map(no=no, code=code, sno=sno, x=x, y=y)
+
+        print(f"[cctv] AI 이슈 도면 처리 완료 (no={no}, code={code}, sno={sno})")
         return out
 
     except ImportError:
-        return {"skipped": "shopmap 모듈 없음"}
+        # AIISSUEMAP 모듈을 불러오지 못해도 CCTV 기능 전체가 중단되지 않도록 처리
+        return {"skipped": "aiissuemap 모듈 없음"}
 
     except Exception as e:
-        print(f"[cctv] AI 이슈 도면 생성 실패 (code={code}, shopmapno={shopmapno}): {e}")
-        return {"error": str(e)}
+        # AIISSUEMAP 처리 중 오류가 발생해도 CCTV 이슈 저장 자체는 유지
+        print(f"[cctv] AI 이슈 도면 처리 실패 (no={no}, code={code}, sno={sno}): {e}")
+        return {"success": False, "aimapno": None, "fsaved": None, "message": str(e)}
 
 
 def _call_notify(payload: dict) -> dict:
-    """알림(문자/메일) 발송 호출. 담당 모듈이 준비되면 자동으로 연결된다.
+    """CCTV 이슈 정보를 Notification으로 전달하여 문자/메일 알림을 처리한다."""
 
-    CCTV_ISSUE.NOTICEYN을 'N'으로 만들어 두고 담당자가 폴링하는 방식도 가능하므로,
-    모듈이 없는 것 자체는 오류가 아니다.
-    """
     try:
-        from modules.notify import send_issue_notification   # 담당자 구현 예정
+        from notification.service import process_cctv_issue
+
+        return process_cctv_issue(
+            cino=payload["no"],
+            sno=payload["sno"],
+            cno=payload["cno"],
+            asmno=payload.get("asmno"),
+        )
+
     except ImportError:
-        return {"skipped": "알림 모듈 미구현 (NOTICEYN='N' 폴링 방식으로 처리 중일 수 있음)"}
+        return {"skipped": "notification 모듈을 불러올 수 없습니다."}
 
-    try:
-        return send_issue_notification(**payload)
     except Exception as e:
-        print(f"[cctv] 알림 발송 실패: {e}")
-        return {"error": str(e)}
+        print(
+            f"[cctv] 알림 발송 실패 "
+            f"(cino={payload['no']}, cno={payload['cno']}): {e}"
+        )
+
+        return {
+            "success": False,
+            "error": str(e),
+        }
 
 
 # ===========================================================================
 # CCTV_ISSUE INSERT
 # ===========================================================================
+
 
 def _insert_issue(cno: int, code: str, comnet: str, reliability: str) -> int:
     connection = get_connection()
@@ -269,6 +291,7 @@ def _insert_issue(cno: int, code: str, comnet: str, reliability: str) -> int:
 # ===========================================================================
 # 손님(방문객) 입·퇴장 - CCTV_VISITOR
 # ===========================================================================
+
 
 def visitor_enter(cno: int, track_id: str, intime: str) -> dict:
     """손님 입장. CCTV_VISITOR에 STATE=0(입장중)으로 INSERT한다.
@@ -316,8 +339,9 @@ def visitor_enter(cno: int, track_id: str, intime: str) -> dict:
         connection.close()
 
 
-def visitor_exit(cno: int, track_id: str, outtime: str,
-                 staytime: int, state: int = VISITOR_STATE_OUT) -> dict:
+def visitor_exit(
+    cno: int, track_id: str, outtime: str, staytime: int, state: int = VISITOR_STATE_OUT
+) -> dict:
     """손님 퇴장. 입장 때 만들어진 행을 찾아 OUTTIME/STAYTIME/STATE를 채운다.
 
     이미 퇴장 처리된 행은 다시 건드리지 않는다(STATE=0 조건) - 재전송이 와도 안전하다.
