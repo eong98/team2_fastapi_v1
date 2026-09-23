@@ -7,6 +7,7 @@ from survey.router import router as survey_router
 from shopmap.router import router as shopmap_router
 from cctv.router import router as cctv_router
 from notification.router import router as notification_router
+from chatbot.router import router as chatbot_router
 
 
 # FastAPI 앱 생성
@@ -42,6 +43,10 @@ app.include_router(cctv_router)
 
 # 알림 AI
 app.include_router(notification_router)
+
+# 챗봇 상담 AI (RAG 검색) / 상담내용 요약 AI
+app.include_router(chatbot_router)
+
 
 # ==============================
 # 서버 확인
