@@ -56,7 +56,12 @@ class CctvVisitorResponse(BaseModel):
 
 
 class CctvIssueReportResponse(BaseModel):
-    no: int
+    no: int                        # CCTV_ISSUE 번호 (알림/도면 쪽에서 참조)
     code: str
     comnet: str
     reliability: str
+    cno: int
+    sno: Optional[int] = None      # 이 CCTV가 속한 매장 번호 (서버가 조회해서 채움)
+    x: Optional[float] = None      # 도면 좌표 0~1
+    y: Optional[float] = None
+    notify: bool = False           # 신뢰도 기준을 넘어 알림 대상인지
