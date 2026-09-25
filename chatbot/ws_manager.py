@@ -33,11 +33,14 @@ class ChatWSManager:
     async def notify(self, mno: int | None, gno: str | None, payload: dict):
         """해당 사용자에게 연결된 모든 탭에 알림을 보냅니다. 연결이 없으면 조용히 무시합니다."""
         key = self._key(mno, gno)
-        for ws in self.connections.get(key, []):
+        dead = []
+        for ws in list(self.connections.get(key, [])):
             try:
                 await ws.send_json(payload)
             except Exception:
-                pass  # 연결이 끊겼으면 다음 정리 시점에 자연히 사라짐
+                dead.append(ws)  # 끊긴 연결은 목록에서 제거 (계속 쌓이지 않게)
+        for ws in dead:
+            self.disconnect(ws, mno, gno)
 
 
 ws_manager = ChatWSManager()

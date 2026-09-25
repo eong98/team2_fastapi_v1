@@ -5,15 +5,18 @@ CHAT_LOG를 Oracle에서 직접 조회/저장하고, CHAT_SESSION을 직접 UPDA
 (Spring REST API를 거치지 않음 - survey/service.py, cctv/service.py와 동일한 패턴).
 """
 
+import asyncio
 from datetime import datetime
+from langchain_core.messages import AIMessage, HumanMessage
 
-from core.database import get_connection
-from modules.chat_summary import summarize_chat
-from modules.chat_rag import answer_question, generate_greeting
 from chatbot.ws_manager import ws_manager
+from core.database import get_connection
+from modules.chat_rag_langgraph import answer_question, generate_greeting
+from modules.chat_summary import summarize_chat
 
-from langchain_core.messages import HumanMessage, AIMessage
-
+# =====================================================================
+# Constants (상수 정의)
+# =====================================================================
 
 # ── CHAT_LOG.SENDER ─────────────────────────────────────────────
 SENDER_USER = 0
@@ -26,9 +29,10 @@ MTYPE_FREE_TEXT = 2
 MTYPE_AI_ANSWER = 4
 MTYPE_SYSTEM_NOTICE = 5
 
-# ── CHAT_SESSION.ENDFLOW (FastAPI가 직접 갱신하는 값) ─────────────
-ENDFLOW_SUMMARIZING = 5
+# ── CHAT_SESSION.ENDFLOW (FastAPI가 직접 갱신하는 상태 값) ─────────
 ENDFLOW_NEEDS_ADMIN = 4
+ENDFLOW_SUMMARIZING = 5
+ENDFLOW_AI_RESPONDING = 6
 
 # ── 구분선 고정 문구 ─────────────────────────────────────────────
 DIVIDER_AI_START = "여기부터 AI 상담입니다"
@@ -40,8 +44,7 @@ DIVIDER_AI_END = "여기까지가 AI 상담입니다"
 # =====================================================================
 
 def get_chat_conversation(sno: str) -> str:
-    """특정 세션의 CHAT_LOG를 시간순으로 조회해서, 메시지 유형까지 표시한 텍스트로 합친다."""
-
+    """특정 세션의 CHAT_LOG를 시간순으로 조회해서, 메시지 유형까지 표시한 텍스트로 합칩니다."""
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -66,12 +69,12 @@ def get_chat_conversation(sno: str) -> str:
         )
 
         rows = cursor.fetchall()
-
         lines = []
+
         for sender, mtype, content in rows:
             if hasattr(content, "read"):
                 content = content.read()
-            speaker = "사용자" if sender == 0 else ("AI" if sender == 1 else "상담봇")
+            speaker = "사용자" if sender == SENDER_USER else ("AI" if sender == SENDER_AI else "상담봇")
             mtype_label = MTYPE_LABEL.get(mtype, "기타")
             lines.append(f"[{mtype_label}] {speaker}: {content}")
 
@@ -84,12 +87,10 @@ def get_chat_conversation(sno: str) -> str:
 
 def summarize_and_save(sno: str) -> dict:
     """
-    세션의 대화 전체를 요약하고, CHAT_SESSION.STITLE에 즉시 저장한다.
-    title은 채팅목록 타이틀로 바로 쓰이니 저장하고, content/type은 QA 등록
-    폼 초기값으로만 쓰이므로 저장하지 않고 응답으로만 돌려준다.
+    세션의 대화 전체를 요약하고, CHAT_SESSION.STITLE에 즉시 저장합니다.
+    title은 채팅목록 타이틀로 저장하며, content/type은 응답으로만 반환합니다.
     """
-
-    _set_endflow(sno, ENDFLOW_SUMMARIZING)  # 시작 전에 먼저 저장
+    _set_endflow(sno, ENDFLOW_SUMMARIZING)  # 시작 전에 상태 업데이트
 
     try:
         conversation = get_chat_conversation(sno)
@@ -97,16 +98,17 @@ def summarize_and_save(sno: str) -> dict:
             raise ValueError(f"세션 {sno}의 대화 로그가 없습니다.")
 
         result = summarize_chat(conversation)
-        _save_title_and_clear_endflow(sno, result["title"])  # 성공 시 STITLE 저장 + ENDFLOW 해제
+        _save_title_and_clear_endflow(sno, result["title"])  # 성공 시 STITLE 저장 및 ENDFLOW 해제
 
         return result
 
     except Exception:
-        _set_endflow(sno, None)  # 실패해도 대기상태는 풀어줌 (무한 로딩 방지)
+        _set_endflow(sno, None)  # 실패 시 대기상태 해제 (무한 로딩 방지)
         raise
 
 
 def _set_endflow(sno: str, endflow) -> None:
+    """CHAT_SESSION.ENDFLOW 전용 내부 갱신 함수"""
     connection = get_connection()
     cursor = connection.cursor()
     try:
@@ -121,6 +123,7 @@ def _set_endflow(sno: str, endflow) -> None:
 
 
 def _save_title_and_clear_endflow(sno: str, title: str) -> None:
+    """STITLE 저장 및 ENDFLOW 초기화 내부 처리 함수"""
     connection = get_connection()
     cursor = connection.cursor()
     try:
@@ -141,16 +144,10 @@ def _save_title_and_clear_endflow(sno: str, title: str) -> None:
 def create_chat_log(sno: str, sender: int, mtype: int, content: str, cno: int = None) -> int:
     """
     CHAT_LOG에 로그 한 건을 직접 INSERT하고, CHAT_SESSION.UDATE를 함께 갱신합니다.
-    PK(NO)는 Spring(JPA)이 쓰는 CHAT_LOG_SEQ 시퀀스를 그대로 재사용합니다.
-
-    sender=SENDER_USER(사용자)일 때는 READAT도 같이 갱신합니다 — 본인이 직접
-    보낸 메시지는 이미 읽은 상태나 마찬가지이기 때문입니다. AI/시스템 메시지는
-    READAT을 건드리지 않아, 사용자가 실제로 열람하기 전까지 "안읽음" 상태가
-    유지됩니다.
+    sender가 사용자일 경우 READAT도 동일하게 갱신 처리합니다.
     """
     connection = get_connection()
     cursor = connection.cursor()
-
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     try:
@@ -196,7 +193,7 @@ def create_chat_log(sno: str, sender: int, mtype: int, content: str, cno: int = 
 
 
 def update_endflow(sno: str, endflow) -> None:
-    """CHAT_SESSION.ENDFLOW를 직접 UPDATE합니다. endflow=None이면 NULL로 해제합니다."""
+    """CHAT_SESSION.ENDFLOW를 직접 UPDATE합니다. (endflow=None 시 NULL)"""
     connection = get_connection()
     cursor = connection.cursor()
     try:
@@ -214,6 +211,7 @@ def update_endflow(sno: str, endflow) -> None:
 
 
 def _set_cmode(sno: str, cmode: int) -> None:
+    """CHAT_SESSION.CMODE를 변경합니다."""
     connection = get_connection()
     cursor = connection.cursor()
     try:
@@ -230,8 +228,28 @@ def _set_cmode(sno: str, cmode: int) -> None:
         connection.close()
 
 
+CMODE_CLOSED = 2
+EMPTY_ANSWER_FALLBACK = "죄송합니다. 지금은 답변을 만들지 못했습니다. 잠시 후 다시 질문해주시거나 관리자에게 문의해주세요."
+
+
+def ensure_session_open(sno: str) -> None:
+    """존재하지 않거나 이미 종료된(CMODE=2) 세션이면 ValueError — 라우터에서 400으로 응답."""
+    connection = get_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT CMODE FROM CHAT_SESSION WHERE NO = :sno", {"sno": sno})
+        row = cursor.fetchone()
+    finally:
+        cursor.close()
+        connection.close()
+    if row is None:
+        raise ValueError("존재하지 않는 상담입니다.")
+    if row[0] == CMODE_CLOSED:
+        raise ValueError("이미 종료된 상담입니다.")
+
+
 def get_session_owner(sno: str) -> tuple:
-    """세션의 소유자(mno, gno)를 조회합니다. (WebSocket 알림 대상 식별용)"""
+    """세션 소유자(mno, gno)를 조회합니다. (WebSocket 알림 식별용)"""
     connection = get_connection()
     cursor = connection.cursor()
     try:
@@ -245,14 +263,8 @@ def get_session_owner(sno: str) -> tuple:
 
 def get_ai_chat_history(sno: str) -> list:
     """
-    이번 세션에서, 가장 최근 'AI상담 시작' 구분선(DIVIDER_AI_START) 이후의
-    대화(자유질문/AI답변)만 조회해서 LangChain 메시지 리스트로 변환합니다.
-
-    같은 세션 안에서 "다른 질문하기"로 옵션형에 갔다가 다시 AI상담을 시작해도,
-    start_ai_consult()가 구분선을 새로 INSERT하므로, 그 이전 구간의 대화는
-    자동으로 맥락(History)에서 제외됩니다 — 별도 세션 분리 없이 구분선만으로
-    경계를 관리합니다. 개수 제한(최근 N개 등)은 두지 않습니다(구간 자체가
-    짧게 끊기는 구조라 불필요하다고 판단).
+    최근 'AI상담 시작' 구분선(DIVIDER_AI_START) 이후의 대화 로그만 조회해
+    LangChain 메시지 리스트로 변환합니다.
     """
     connection = get_connection()
     cursor = connection.cursor()
@@ -304,20 +316,37 @@ def get_ai_chat_history(sno: str) -> list:
 
 def start_ai_consult(sno: str) -> dict:
     """
-    AI 상담 시작.
-    1. "AI 상담" 버튼 클릭 자체를 사용자 발화로 저장(응답에는 미포함 — 프론트가 즉시 그림)
-    2. 구분선(고정 문구) 저장(응답에는 미포함 — 프론트가 즉시 그림)
-    3. LLM이 생성한 인사말 저장
-    4. CHAT_SESSION.CMODE를 1(AI상담)로 전환, ENDFLOW 잔재 초기화
+    AI 상담을 시작합니다. (동기 함수 — 라우터가 스레드풀에서 실행하므로 이벤트 루프를 막지 않음)
+    1. 'AI 상담' 선택 로그 및 시작 구분선 저장
+    2. ENDFLOW=6, CMODE=1을 LLM 호출 "전에" 먼저 저장
+       (LLM 호출(인사말 생성) 중에 사용자가 방을 나갔다 들어와도, CMODE가
+       이미 AI로 바뀌어 있어야 프론트의 restoreFromSession이 옵션형으로
+       잘못 복원하지 않는다 — CMODE 전환이 LLM 호출 뒤에 있으면, 그 사이에
+       재진입 시 CMODE는 옛날 값(0)인데 ENDFLOW만 6인 어중간한 상태가 되어
+       화면이 옵션형으로 잘못 복원되는 버그가 있었다)
+    3. LLM 인사말 생성, 저장
+    4. ENDFLOW 초기화
     """
+    ensure_session_open(sno)
     create_chat_log(sno, SENDER_USER, MTYPE_MENU_SELECT, "AI 상담")
     create_chat_log(sno, SENDER_SYSTEM, MTYPE_SYSTEM_NOTICE, DIVIDER_AI_START)
 
-    greeting = generate_greeting()
-    greeting_log_no = create_chat_log(sno, SENDER_AI, MTYPE_AI_ANSWER, greeting)
-
+    # 1. LLM 호출 전에 ENDFLOW=6, CMODE=1을 먼저 저장 (재진입 시 상태 불일치 방지)
+    update_endflow(sno, ENDFLOW_AI_RESPONDING)
     _set_cmode(sno, 1)
-    update_endflow(sno, None)  # 이전 세션에 남아있던 ENDFLOW 잔재(예: 4) 초기화
+
+    try:
+        # 2. LLM 인사말 생성
+        greeting = (generate_greeting() or "").strip() or "안녕하세요! 무엇이 궁금하신가요?"
+        greeting_log_no = create_chat_log(sno, SENDER_AI, MTYPE_AI_ANSWER, greeting)
+
+        # 3. 정상적으로 끝난 후 ENDFLOW 초기화
+        update_endflow(sno, None)
+
+    except Exception:
+        # 실패 시 무한 로딩 방지를 위해 ENDFLOW 초기화 (CMODE는 이미 AI로 전환된 채 유지)
+        update_endflow(sno, None)
+        raise
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -329,7 +358,7 @@ def start_ai_consult(sno: str) -> dict:
 
 
 def end_ai_consult_divider(sno: str) -> dict:
-    """AI상담 중 다른질문하기/관리자문의/상담종료 클릭 시, 구분선(고정 문구)만 저장합니다."""
+    """AI 상담 종료 구분선만 DB에 저장합니다."""
     log_no = create_chat_log(sno, SENDER_SYSTEM, MTYPE_SYSTEM_NOTICE, DIVIDER_AI_END)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return {
@@ -340,31 +369,49 @@ def end_ai_consult_divider(sno: str) -> dict:
 
 
 # =====================================================================
-# AI 자유상담 (RAG 질의응답, 멀티턴 맥락 유지)
+# AI 자유상담 (RAG 질의응답)
 # =====================================================================
-ENDFLOW_AI_RESPONDING = 6
 
 async def process_ai_chat(sno: str, message: str) -> dict:
+    """
+    사용자 질의를 처리하여 LLM 답변을 생성 및 DB에 저장합니다.
+    DB 조회/저장과 LLM 호출은 모두 동기(블로킹)라서 별도 스레드에서 실행합니다.
+    (async 함수 안에서 그대로 부르면 LLM이 답하는 수십 초 동안 서버 전체가 멈춰서,
+     다른 사용자의 요청·WebSocket·옵션생성 진행률 조회까지 모두 대기하게 됨)
+    """
+    result = await asyncio.to_thread(_process_ai_chat_sync, sno, message)
+
+    mno, gno = await asyncio.to_thread(get_session_owner, sno)
+    await ws_manager.notify(mno, gno, {"type": "new_message", "sno": sno})
+    return result
+
+
+def _process_ai_chat_sync(sno: str, message: str) -> dict:
+    message = (message or "").strip()
+    if not message:
+        raise ValueError("메시지를 입력해주세요.")
+    ensure_session_open(sno)
+
     history = get_ai_chat_history(sno)
 
     create_chat_log(sno, SENDER_USER, MTYPE_FREE_TEXT, message)
-    update_endflow(sno, ENDFLOW_AI_RESPONDING)  # LLM 호출 시작 전에 먼저 저장
+    update_endflow(sno, ENDFLOW_AI_RESPONDING)  # LLM 호출 시작 직전에 저장
 
     try:
         result = answer_question(message, history)
-        answer = result["answer"]
-        needs_admin = result["needsAdmin"]
+        answer = (result.get("answer") or "").strip()
+        needs_admin = bool(result.get("needsAdmin"))
+        if not answer:
+            # CHAT_LOG.CONTENT는 NOT NULL — 빈 답변이면 안내 문구로 대체하고 관리자 문의 유도
+            answer, needs_admin = EMPTY_ANSWER_FALLBACK, True
 
         ai_log_no = create_chat_log(sno, SENDER_AI, MTYPE_AI_ANSWER, answer)
 
         update_endflow(sno, ENDFLOW_NEEDS_ADMIN if needs_admin else None)
 
     except Exception:
-        update_endflow(sno, None)  # 실패해도 대기상태는 풀어줌 (무한 로딩 방지)
+        update_endflow(sno, None)  # 예외 발생 시 대기 상태 초기화
         raise
-
-    mno, gno = get_session_owner(sno)
-    await ws_manager.notify(mno, gno, {"type": "new_message", "sno": sno})
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
