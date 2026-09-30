@@ -5,7 +5,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from core.llm_client import get_llm
 
 
-llm = get_llm()
+# H200 gemma4:26b 같은 생각(thinking) 모델은 답 전에 생각 텍스트를 길게 만들어 느리고
+# 출력 한도에 걸리면 답이 비어 JSON 파싱이 실패함 → 가져온 LLM의 복사본에만 생각 끄기
+# (core/llm_client.py는 수정하지 않음, 생각 기능 없는 로컬 모델엔 영향 없음)
+llm = get_llm().model_copy(update={"reasoning": False})
 
 
 def summarize_chat(conversation_text: str) -> dict:

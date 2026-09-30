@@ -4,10 +4,11 @@ modules/chat_rag.py (LangGraph Version)
 LangGraph 기반의 RAG 대화 그래프입니다.
 
 흐름 구조:
- 1. check_greeting_node: 단순 첫 인사어 패턴 정규식 검사 (history 없고 메시지
-    전체가 정규식과 정확히 일치할 때만 인사로 판정, LLM 호출 없음)
-    - 단순 인사일 경우 → greeting_node로 바로 이동
-    - 아닐 경우 → search_node로 이동
+ 1. check_greeting_node: 정규식으로 즉시 판별 (LLM 호출 없음)
+    - 자음·모음만/기호만 있는 입력(ㅂ, ㅏ, ㅋㅋ, ?? 등) → unclear_node (LLM 없이 즉시 안내)
+    - 관리자/상담원과 직접 이야기하고 싶다는 요청 → admin_node (관리자 문의 버튼 표시)
+    - 단순 첫 인사(history 없고 메시지 전체가 인사말) → greeting_node
+    - 그 외 → search_node
  2. search_node: RAG 매뉴얼 선검색 및 유사도 콘솔 출력
  3. generate_node: 통합 LLM을 단 1회 호출하여 단순인사/일상대화 제한/
     매뉴얼 기반 요약/폴백(관리자 연결) 판단과 답변을 함께 생성
@@ -33,9 +34,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.llm_client import get_llm
 from modules.manual_retriever import search_manual
+from chatbot.text_clean import scrub_internal, strip_urls
 
 
-llm = get_llm()
+# H200 gemma4:26b 같은 생각(thinking) 모델은 답 전에 생각 텍스트를 길게 만들어 느리고
+# 출력 한도에 걸리면 답이 비어 JSON 파싱이 실패함 → 가져온 LLM의 복사본에만 생각 끄기
+# (core/llm_client.py는 수정하지 않음, 생각 기능 없는 로컬 모델엔 영향 없음)
+llm = get_llm().model_copy(update={"reasoning": False})
 
 
 class ChatAnswer(BaseModel):
@@ -44,8 +49,9 @@ class ChatAnswer(BaseModel):
     answer: str = Field(description="사용자에게 전달할 자연스러운 한국어 답변 (최대 5줄 이하)")
     needsAdmin: bool = Field(
         description=(
-            "사용자가 서비스 관련 문의/질문을 했으나 매뉴얼 정보가 전혀 없어 관리자 확인이 필요한 경우에만 true. "
-            "첫 인사말, 서비스 유관 질문, 일상대화/고민상담 안내의 경우 false"
+            "true인 경우: (1) 서비스 관련 질문인데 매뉴얼 정보가 전혀 없어 관리자 확인이 필요할 때, "
+            "(2) 사용자가 관리자·상담원·담당자 등 사람과 직접 문의/연결/상담을 원한다고 말할 때. "
+            "그 외(첫 인사말, 서비스 사용법 질문, '1:1 문의 작성 방법' 같은 일반 문의하기 질문, 일상대화)는 false"
         )
     )
 
@@ -58,6 +64,22 @@ GREETING_FALLBACK = "안녕하세요! 저는 Allimio의 AI 상담봇 알리미�
 
 # RAG 문턱
 RELEVANCE_THRESHOLD = 0.3
+
+# 관리자(사람)와 직접 문의/연결을 원하는 요청 — 검색·LLM 없이 바로 관리자 문의 버튼을 띄움.
+# "문의하기는 어떻게 해요?"처럼 대상(관리자/상담원 등)이 없는 일반 사용법 질문은 걸리지 않음.
+ADMIN_REQUEST_PATTERN = re.compile(
+    r"(관리자|상담원|상담사|담당자|운영자|매니저|사람)\s*(님)?\s*(에게|께|한테|과|와|이랑|하고|랑|으로|로|를|을)?\s*"
+    r"(직접\s*)?(문의|연결|상담|통화|대화|얘기|이야기|질문|물어|바꿔|넘겨|연락)"
+)
+ADMIN_REQUEST_ANSWER = "관리자에게 직접 문의하실 수 있도록 도와드릴게요.\n아래 [관리자에게 문의하기] 버튼을 눌러주세요."
+
+# 뜻을 알 수 없는 입력 — 완성된 한글 글자·영문·숫자가 하나도 없고 자음/모음/기호/공백뿐인 경우
+# (예: "ㅂ", "ㅏ", "ㅋㅋㅋ", "ㅠㅠ", "??", "...") → 검색·LLM 없이 즉시 안내 (응답 시간 수십 초 → 즉시)
+UNCLEAR_INPUT_PATTERN = re.compile(r"^[\sㄱ-ㅎㅏ-ㅣ\W_]*$")
+UNCLEAR_INPUT_ANSWER = (
+    "말씀하신 내용을 이해하지 못했어요. 😅\n"
+    "궁금하신 점을 문장으로 입력해 주세요. (예: \"구독권 요금이 궁금해요\", \"CCTV 등록은 어떻게 하나요?\")"
+)
 
 # 단순 첫 인사어 정규식 (LLM 및 DB 호출 절약용)
 SIMPLE_GREETING_PATTERN = re.compile(
@@ -73,7 +95,7 @@ SIMPLE_GREETING_PATTERN = re.compile(
 class State(TypedDict):
     message: str
     history: list
-    route: str            # "greeting" | "question"
+    route: str            # "unclear" | "admin" | "greeting" | "question"
     docs_context: str     # search_node가 채움
     answer: str
     needsAdmin: bool
@@ -87,13 +109,14 @@ graph_builder = StateGraph(State)
 ### ==========================================
 
 def _ensure_valid_answer(answer: str, fallback: str, retry_fn=None) -> str:
-    """답변이 너무 짧거나 비어있을 때 폴백 처리."""
-    if len(answer.strip()) >= MIN_ANSWER_LENGTH:
+    """답변이 너무 짧거나 비어있을 때 폴백 처리. URL/내부 경로(/shopplan 등)는 항상 제거."""
+    answer = scrub_internal(strip_urls(answer))
+    if len(answer) >= MIN_ANSWER_LENGTH:
         return answer
 
     if retry_fn is not None:
-        retried = retry_fn()
-        if len(retried.strip()) >= MIN_ANSWER_LENGTH:
+        retried = scrub_internal(strip_urls(retry_fn()))
+        if len(retried) >= MIN_ANSWER_LENGTH:
             return retried
 
     return fallback
@@ -137,6 +160,14 @@ def check_greeting_node(state: State):
     message = state["message"]
     history = state.get("history") or []
 
+    if UNCLEAR_INPUT_PATTERN.match(message.strip()):
+        print(f"\n👉 [인사판별 노드] '{message}' → unclear (자음/모음/기호만 입력)")
+        return {"route": "unclear"}
+
+    if ADMIN_REQUEST_PATTERN.search(message):
+        print(f"\n👉 [인사판별 노드] '{message}' → admin (관리자 문의 요청)")
+        return {"route": "admin"}
+
     if not history and SIMPLE_GREETING_PATTERN.match(message.strip()):
         print(f"\n👉 [인사판별 노드] '{message}' → greeting")
         return {"route": "greeting"}
@@ -146,6 +177,27 @@ def check_greeting_node(state: State):
 
 
 graph_builder.add_node("check_greeting", check_greeting_node)
+
+
+# 관리자 문의 요청 노드
+def admin_node(state: State):
+    """
+    사용자가 관리자/상담원과 직접 문의하길 원할 때 — 검색·LLM 없이 안내하고 needsAdmin=True.
+    service.py가 ENDFLOW=4로 저장 → 화면에 [관리자에게 문의하기] 버튼이 나타남.
+    """
+    return {"answer": ADMIN_REQUEST_ANSWER, "needsAdmin": True}
+
+
+graph_builder.add_node("admin", admin_node)
+
+
+# 뜻을 알 수 없는 입력 노드
+def unclear_node(state: State):
+    """자음/모음/기호만 있는 입력 — 검색·LLM 없이 문장으로 다시 질문하도록 즉시 안내."""
+    return {"answer": UNCLEAR_INPUT_ANSWER, "needsAdmin": False}
+
+
+graph_builder.add_node("unclear", unclear_node)
 
 
 # 인사 응대 노드
@@ -193,7 +245,11 @@ def search_node(state: State):
         print(f"  [{idx}] 점수: {score:.4f} [{passed}] | {content_snippet}...")
     print("=" * 50 + "\n")
 
-    context = "\n\n".join(d["content"] for d in relevant_docs) if relevant_docs else "없음"
+    # 매뉴얼의 URL/내부 경로(/shopplan 등)는 AI가 답변에 옮겨 적지 않도록 미리 제거
+    # 회원 등급 번호 같은 내부 운영 정보도 AI에 넘기기 전에 제거
+    context = (
+        "\n\n".join(scrub_internal(strip_urls(d["content"])) for d in relevant_docs) if relevant_docs else "없음"
+    )
     return {"docs_context": context}
 
 
@@ -241,8 +297,17 @@ def generate_node(state: State):
    - "죄송합니다, 요청하신 정확한 정보를 찾지 못했습니다. 담당자(관리자)에게 연결해 드릴까요?" 취지로 짧게 안내하세요.
    - `needsAdmin`: true
 
+5. **사용자가 관리자·상담원·담당자 등 사람과 직접 문의/연결/상담을 원하는 경우**:
+   - "관리자에게 직접 문의하실 수 있도록 아래 [관리자에게 문의하기] 버튼을 눌러주세요." 취지로 안내하세요.
+   - `needsAdmin`: true
+   - 단, "1:1 문의는 어떻게 작성해요?"처럼 문의하기 기능 사용법을 묻는 질문은 3번으로 설명하고 `needsAdmin`: false
+
 [주의사항]
 - "참고 자료", "context", "문서" 등 시스템/개발 용어는 절대 포함하지 마세요.
+- URL, 링크, "/shopplan" 같은 페이지 경로는 절대 쓰지 마세요.
+- 회원 등급 번호(예: 등급 6, 등급 10), 관리자 등급·관리자 계정·내부 권한 체계 같은 내부 운영 정보는 안내하지 마세요.
+  필요하면 "점주", "직원"처럼 역할 이름으로만 설명하세요.
+  위치를 안내할 때는 "상단 메뉴의 [구독권 안내]"처럼 화면에 보이는 메뉴 이름으로만 설명하세요.
 - 대화 이력이 있다면 이전 대화 맥락에 맞춰 자연스럽게 이어가세요.
 
 [참고 자료]
@@ -253,7 +318,8 @@ def generate_node(state: State):
         [SystemMessage(content=system_prompt), *history, HumanMessage(content=message)]
     )
 
-    return {"answer": result.answer, "needsAdmin": result.needsAdmin}
+    answer = scrub_internal(strip_urls(result.answer)) or FALLBACK_ANSWER
+    return {"answer": answer, "needsAdmin": result.needsAdmin}
 
 
 graph_builder.add_node("generate", generate_node)
@@ -271,10 +337,12 @@ def route_after_greeting_check(state: State):
 graph_builder.add_conditional_edges(
     "check_greeting",
     route_after_greeting_check,
-    {"greeting": "greeting", "question": "search"},
+    {"unclear": "unclear", "admin": "admin", "greeting": "greeting", "question": "search"},
 )
 
 graph_builder.add_edge(START, "check_greeting")
+graph_builder.add_edge("unclear", END)
+graph_builder.add_edge("admin", END)
 graph_builder.add_edge("greeting", END)
 graph_builder.add_edge("search", "generate")
 graph_builder.add_edge("generate", END)
