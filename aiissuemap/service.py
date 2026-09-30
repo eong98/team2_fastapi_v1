@@ -11,7 +11,7 @@ from core.codes_cache import get_codes
 # 실행 환경 확인
 # =========================================================
 
-IS_H200 = os.path.exists("/home/d260730-c1-s2")
+IS_H200 = os.path.exists("/data/home/d260730-c1-s2")
 
 
 # =========================================================
@@ -19,26 +19,40 @@ IS_H200 = os.path.exists("/home/d260730-c1-s2")
 # =========================================================
 
 if IS_H200:
-    # H200 서버
     SHOPMAP_DIR = Path(
-        os.getenv("SHOPMAP_DIR", "/home/d260730-c1-s2/allimio/storage/shopmap")
+        os.getenv(
+            "SHOPMAP_DIR",
+            "/data/home/d260730-c1-s2/allimio/storage/shopmap"
+        )
     )
 
     AIISSUEMAP_DIR = Path(
-        os.getenv("AIISSUEMAP_DIR", "/home/d260730-c1-s2/allimio/storage/aiissuemap")
+        os.getenv(
+            "AIISSUEMAP_DIR",
+            "/data/home/d260730-c1-s2/allimio/storage/aiissuemap"
+        )
     )
 
 else:
-    # Windows 개발 환경
-    BASE_DIR = Path(__file__).resolve().parent
+    BASE_DIR = Path(__file__).resolve().parent.parent
 
-    SHOPMAP_DIR = BASE_DIR.parent / "shopmap" / "storage"
-    AIISSUEMAP_DIR = BASE_DIR / "storage"
+    SHOPMAP_DIR = Path(
+        os.getenv(
+            "SHOPMAP_DIR",
+            str(BASE_DIR / "storage" / "shopmap")
+        )
+    )
+
+    AIISSUEMAP_DIR = Path(
+        os.getenv(
+            "AIISSUEMAP_DIR",
+            str(BASE_DIR / "storage" / "aiissuemap")
+        )
+    )
 
 
-# AI 이슈맵 저장 폴더가 없으면 생성
+SHOPMAP_DIR.mkdir(parents=True, exist_ok=True)
 AIISSUEMAP_DIR.mkdir(parents=True, exist_ok=True)
-
 
 # =========================================================
 # 좌표 검증
@@ -142,8 +156,8 @@ def find_shopmap_no(sno: int) -> int | None:
 
 def find_original_shopmap(shopmapno: int):
     """
-    SHOPMAP 테이블에서 저장 파일명을 조회하고
-    실제 원본 도면 이미지를 읽어 반환한다.
+    SHOPMAP 테이블의 FSAVED 파일명을 조회한 뒤
+    H200의 SHOPMAP_DIR에서 원본 매장 도면을 불러온다.
     """
 
     conn = get_connection()
@@ -162,6 +176,7 @@ def find_original_shopmap(shopmapno: int):
         row = cursor.fetchone()
 
         if row is None:
+            print(f"[aiissuemap] SHOPMAP 정보 없음 " f"(shopmapno={shopmapno})")
             return None
 
         fsaved = row[0]
@@ -171,14 +186,22 @@ def find_original_shopmap(shopmapno: int):
         conn.close()
 
     if not fsaved:
+        print(f"[aiissuemap] SHOPMAP.FSAVED 없음 " f"(shopmapno={shopmapno})")
         return None
 
     file_path = SHOPMAP_DIR / fsaved
 
     if not file_path.exists():
+        print(f"[aiissuemap] 원본 도면 파일 없음: " f"{file_path}")
         return None
 
-    return cv2.imread(str(file_path))
+    image = cv2.imread(str(file_path))
+
+    if image is None:
+        print(f"[aiissuemap] 원본 도면 이미지 읽기 실패: " f"{file_path}")
+        return None
+
+    return image
 
 
 # =========================================================

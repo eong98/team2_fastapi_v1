@@ -4,17 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from survey.router import router as survey_router
-from aiissuemap.router import router as shopmap_router
+from aiissuemap.router import router as aiissuemap_router
 from cctv.router import router as cctv_router
 from notification.router import router as notification_router
 from chatbot.router import router as chatbot_router
 
-
 # FastAPI 앱 생성
 app = FastAPI(
-    title="Allimio AI API",
-    description="Allimio AI 분석 API",
-    version="1.0.0"
+    title="Allimio AI API", description="Allimio AI 분석 API", version="1.0.0"
 )
 
 
@@ -35,8 +32,8 @@ app.add_middleware(
 # 설문조사 AI
 app.include_router(survey_router)
 
-# 매장 도면 AI
-app.include_router(shopmap_router)
+# AI 이슈 도면
+app.include_router(aiissuemap_router)
 
 # CCTV 이상행동 AI (Jetson 워커 -> 서버)
 app.include_router(cctv_router)
@@ -52,12 +49,10 @@ app.include_router(chatbot_router)
 # 서버 확인
 # ==============================
 
+
 @app.get("/")
 def root():
-    return {
-        "message": "Allimio AI Server",
-        "status": "running"
-    }
+    return {"message": "Allimio AI Server", "status": "running"}
 
 
 # ==============================
@@ -65,9 +60,4 @@ def root():
 # ==============================
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=11200,
-        reload=True
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=11200, reload=True)
