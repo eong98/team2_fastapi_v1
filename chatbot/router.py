@@ -19,6 +19,7 @@ from chatbot.service import (
     start_ai_consult,
     summarize_and_save,
     summarize_title_in_background,
+    warm_up_ai_models,
 )
 from chatbot.ws_manager import ws_manager
 
@@ -32,6 +33,12 @@ router = APIRouter(
 
 class AiChatRequest(BaseModel):
     message: str
+
+
+@router.get("/health")
+def health():
+    """AI 서버 상태 확인 — 화면이 서버가 켜져 있는지 확인할 때 사용 (DB·LLM 호출 없음, 즉시 응답)."""
+    return {"status": "ok"}
 
 
 @router.post("/{sno}/summarize")
@@ -65,13 +72,16 @@ def summarize_title(sno: str, background_tasks: BackgroundTasks):
 
 
 @router.put("/{sno}/ai-start")
-def ai_start(sno: str):
+def ai_start(sno: str, background_tasks: BackgroundTasks):
     """
-    AI 상담을 시작합니다. 
-    구분선(고정 문구) + LLM이 생성한 인사말을 저장하고, 세션을 AI상담 모드로 전환합니다.
+    AI 상담을 시작합니다.
+    구분선 + 고정 인사말을 저장하고, 세션을 AI상담 모드로 전환합니다(LLM 없이 즉시 응답).
+    응답 후 백그라운드로 첫 질문에 쓸 모델(LLM, 임베딩)을 GPU에 미리 올립니다.
     """
     try:
-        return start_ai_consult(sno)
+        result = start_ai_consult(sno)
+        background_tasks.add_task(warm_up_ai_models)
+        return result
     except ChatRequestError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -127,8 +137,11 @@ async def chat_ws(
     await ws_manager.connect(websocket, mno, gno)
     try:
         while True:
-            # 클라이언트 수신 메시지는 연결 유지 목적으로 대기 (필요 시 로직 추가 가능)
-            await websocket.receive_text()
+            # 화면이 연결 유지용으로 보내는 "ping"에 "pong"으로 답함
+            # (오래 조용한 연결을 프록시·방화벽이 끊지 않게 + 화면이 연결이 살아있는지 확인)
+            text = await websocket.receive_text()
+            if text == "ping":
+                await websocket.send_text("pong")
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, mno, gno)
 

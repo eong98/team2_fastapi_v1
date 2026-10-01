@@ -6,14 +6,17 @@ DB 조회·저장은 chat_repository.py, 코드값은 chat_constants.py.
 """
 
 import asyncio
+import threading
+import time
 import traceback
 
 from chatbot.ws_manager import ws_manager
 from datetime import datetime
-from modules.chat_rag_langgraph import answer_question, generate_greeting
+from modules.chat_rag_langgraph import answer_question, llm as chat_llm
+from modules.manual_retriever import _get_vectorstore as get_manual_vectorstore
 from modules.chat_summary import summarize_chat
 
-from chatbot.chat_constants import DIVIDER_AI_END, DIVIDER_AI_START, EMPTY_ANSWER_FALLBACK, ENDFLOW_AI_RESPONDING, ENDFLOW_NEEDS_ADMIN, ENDFLOW_SUMMARIZING, MTYPE_AI_ANSWER, MTYPE_FREE_TEXT, MTYPE_MENU_SELECT, MTYPE_SYSTEM_NOTICE, SENDER_AI, SENDER_SYSTEM, SENDER_USER
+from chatbot.chat_constants import AI_GREETING, DIVIDER_AI_END, DIVIDER_AI_START, EMPTY_ANSWER_FALLBACK, ENDFLOW_AI_RESPONDING, ENDFLOW_NEEDS_ADMIN, ENDFLOW_SUMMARIZING, MTYPE_AI_ANSWER, MTYPE_FREE_TEXT, MTYPE_MENU_SELECT, MTYPE_SYSTEM_NOTICE, SENDER_AI, SENDER_SYSTEM, SENDER_USER
 from chatbot.chat_repository import ChatRequestError, save_title, create_chat_log, ensure_session_open, get_ai_chat_history, get_chat_conversation, get_session_owner, save_title_and_clear_endflow, set_cmode, update_endflow
 
 
@@ -63,45 +66,51 @@ def summarize_and_save(sno: str) -> dict:
         raise
 
 
+WARMUP_MIN_INTERVAL_SEC = 60  # 여러 사람이 동시에 AI 상담을 시작해도 1분에 한 번만 미리 올림
+_warmup_lock = threading.Lock()
+_last_warmup_at = 0.0
+
+
+def warm_up_ai_models() -> None:
+    """
+    AI 상담 시작 직후 백그라운드로 실행 — 첫 질문에서 쓸 모델을 GPU에 미리 올려 둔다.
+    인사말을 고정 문구로 바꾸면서 시작 때 LLM을 안 부르게 되어, 모델이 내려가 있으면
+    첫 질문 답변이 모델 로딩 시간(수십 초)만큼 늦어지는 문제를 막기 위함.
+      - 대화 LLM(gemma): 1토큰만 생성하는 짧은 요청
+      - 임베딩(bge-m3): 첫 질문의 매뉴얼 검색용
+    사용자 응답과 무관하게 실패해도 무시(로그만).
+    """
+    global _last_warmup_at
+    with _warmup_lock:
+        if time.time() - _last_warmup_at < WARMUP_MIN_INTERVAL_SEC:
+            return
+        _last_warmup_at = time.time()
+
+    started = time.time()
+    try:
+        chat_llm.model_copy(update={"num_predict": 1, "format": None}).invoke("hi")
+        get_manual_vectorstore()._embedding_function.embed_query("워밍업")
+        print(f"🔥 AI 모델 미리 올림 완료 ({time.time() - started:.1f}s)")
+    except Exception:
+        print("⚠ AI 모델 미리 올리기 실패 (첫 질문에서 로딩됨)")
+        traceback.print_exc()
+
+
 def start_ai_consult(sno: str) -> dict:
     """
-    AI 상담을 시작합니다. (동기 함수 — 라우터가 스레드풀에서 실행하므로 이벤트 루프를 막지 않음)
+    AI 상담을 시작합니다.
     1. 'AI 상담' 선택 로그 및 시작 구분선 저장
-    2. ENDFLOW=6, CMODE=1을 LLM 호출 "전에" 먼저 저장
-       (LLM 호출(인사말 생성) 중에 사용자가 방을 나갔다 들어와도, CMODE가
-       이미 AI로 바뀌어 있어야 프론트의 restoreFromSession이 옵션형으로
-       잘못 복원하지 않는다 — CMODE 전환이 LLM 호출 뒤에 있으면, 그 사이에
-       재진입 시 CMODE는 옛날 값(0)인데 ENDFLOW만 6인 어중간한 상태가 되어
-       화면이 옵션형으로 잘못 복원되는 버그가 있었다)
-    3. LLM 인사말 생성, 저장
-    4. ENDFLOW 초기화
+    2. CMODE=1(AI 상담) 전환
+    3. 고정 인사말(AI_GREETING) 저장 — LLM을 부르지 않으므로 즉시 응답
+       (예전엔 인사말을 매번 LLM으로 만들어, 모델이 GPU에 올라가 있지 않으면 시작만 수십 초 걸렸음.
+        LLM 호출이 없어져서 "답변 생성 중(ENDFLOW=6)" 상태도 거치지 않는다)
     """
     ensure_session_open(sno)
     create_chat_log(sno, SENDER_USER, MTYPE_MENU_SELECT, "AI 상담")
     create_chat_log(sno, SENDER_SYSTEM, MTYPE_SYSTEM_NOTICE, DIVIDER_AI_START)
-
-    # 1. LLM 호출 전에 ENDFLOW=6, CMODE=1을 먼저 저장 (재진입 시 상태 불일치 방지)
-    update_endflow(sno, ENDFLOW_AI_RESPONDING)
     set_cmode(sno, 1)
-
-    try:
-        # 2. LLM 인사말 생성 — 실패해도 상담은 시작되도록 고정 인사말로 대체 (원인은 서버 로그에)
-        try:
-            greeting = (generate_greeting() or "").strip()
-        except Exception:
-            print(f"⚠ AI 상담 인사말 생성 실패(sno={sno}), 고정 인사말 사용")
-            traceback.print_exc()
-            greeting = ""
-        greeting = greeting or "안녕하세요! 무엇이 궁금하신가요?"
-        greeting_log_no = create_chat_log(sno, SENDER_AI, MTYPE_AI_ANSWER, greeting)
-
-        # 3. 정상적으로 끝난 후 ENDFLOW 초기화
-        update_endflow(sno, None)
-
-    except Exception:
-        # 실패 시 무한 로딩 방지를 위해 ENDFLOW 초기화 (CMODE는 이미 AI로 전환된 채 유지)
-        update_endflow(sno, None)
-        raise
+    greeting = AI_GREETING
+    greeting_log_no = create_chat_log(sno, SENDER_AI, MTYPE_AI_ANSWER, greeting)
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
