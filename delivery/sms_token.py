@@ -1,9 +1,17 @@
+import os
 import base64
 import ssl
 import time
 import requests
 
+from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
+
+# ========================================
+# 환경변수 로드
+# ========================================
+
+load_dotenv()
 
 # ========================================
 # 가비아 SMS 인증 정보
@@ -11,8 +19,8 @@ from requests.adapters import HTTPAdapter
 
 SMS_OAUTH_TOKEN_URL = "https://sms.gabia.com/oauth/token"
 
-SMS_ID = "testcell2014sms"
-API_KEY = "c014b2f02bb8e3c1f245a72856518778"
+SMS_ID = os.getenv("SMS_ID")
+API_KEY = os.getenv("SMS_API_KEY")
 
 
 # ========================================

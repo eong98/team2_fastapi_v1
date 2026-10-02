@@ -1,233 +1,179 @@
 import os
+import smtplib
 
-import requests
-
-# ========================================
-# Java 이메일 발송 API
-# ========================================
-
-JAVA_BASE_URL = os.getenv("JAVA_BASE_URL")
-
+from dotenv import load_dotenv
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 # ========================================
-# Java API 오류 분석
+# 환경변수 로드
+# ========================================
+
+load_dotenv()
+
+# ========================================
+# Gmail SMTP 설정
+# ========================================
+
+# 발송자 정보는 H200 .env에서 가져온다.
+MAIL_HOST = os.getenv("MAIL_HOST", "smtp.gmail.com")
+MAIL_PORT = int(os.getenv("MAIL_PORT", "587"))
+MAIL_USERNAME = os.getenv("MAIL_USERNAME")
+MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
+
+
+# ========================================
+# CCTV 알림 이메일 발송
 # ========================================
 
 
-def _print_email_error(
-    notification_no: int,
-    status_code: int,
-    response_text: str,
-):
+def send_notification_email(
+    to_email: str,
+    title: str,
+    content: str,
+    image_url: str | None = None,
+) -> bool:
     """
-    Java 이메일 발송 API에서 반환한 오류를
-    콘솔에서 확인하기 쉽게 출력한다.
-    """
+    H200에서 Gmail SMTP를 이용하여
+    회원 이메일로 CCTV 이슈 알림을 직접 발송한다.
 
-    print("\n========================================")
-    print("[EMAIL][API][FAIL] 이메일 발송 실패")
-    print("========================================")
-    print(f"- 알림번호: {notification_no}")
-    print(f"- HTTP 상태: {status_code}")
+    발신자:
+        .env의 MAIL_USERNAME
 
-    response_lower = response_text.lower()
-
-    # ----------------------------------------
-    # HTTP 상태별 오류 분석
-    # ----------------------------------------
-
-    if status_code == 400:
-        print("- 원인: Java 이메일 API 요청 데이터 오류 가능성이 있습니다.")
-        print("- 확인: NOTIFICATION 번호 및 요청 형식")
-
-    elif status_code == 401:
-        print("- 원인: Java API 인증 실패 가능성이 있습니다.")
-        print("- 확인: 인증 설정 및 접근 권한")
-
-    elif status_code == 403:
-        print("- 원인: Java 이메일 API 접근 권한이 없습니다.")
-        print("- 확인: Spring Security / API 접근 권한")
-
-    elif status_code == 404:
-        print("- 원인: 알림 또는 이메일 발송 API를 찾을 수 없습니다.")
-        print("- 확인: NOTIFICATION 번호 / Java API 주소")
-
-    elif status_code == 409:
-        print("- 원인: 이메일 발송 처리 중 데이터 충돌이 발생했습니다.")
-
-    elif status_code >= 500:
-        print("- 원인: Java 서버 내부에서 이메일 발송 처리 중 오류가 발생했습니다.")
-        print("- 확인: Java 콘솔 / MailService / MEMBER / SENDLOG")
-
-    else:
-        print("- 원인: Java 이메일 API 요청이 실패했습니다.")
-
-    # ----------------------------------------
-    # 응답 내용으로 추가 원인 추정
-    # ----------------------------------------
-
-    if "email" in response_lower:
-        print("- 추가 확인: 회원 이메일 정보 또는 이메일 형식을 확인하세요.")
-
-    if "member" in response_lower:
-        print("- 추가 확인: NOTIFICATION.MNO와 MEMBER 정보를 확인하세요.")
-
-    if "notification" in response_lower:
-        print("- 추가 확인: NOTIFICATION 데이터 존재 여부를 확인하세요.")
-
-    if "mail" in response_lower:
-        print("- 추가 확인: Java MailService 및 SMTP 설정을 확인하세요.")
-
-    print(f"- Java 응답: {response_text}")
-    print("========================================\n")
-
-
-# ========================================
-# 알림 이메일 발송 요청
-# ========================================
-
-
-def send_notification_email(notification_no: int) -> bool:
-    """
-    저장된 NOTIFICATION 번호를 Java 서버에 전달하여
-    해당 회원에게 이메일 발송을 요청한다.
-
-    Java 서버에서:
-    1. NOTIFICATION 조회
-    2. MNO로 MEMBER 조회
-    3. MEMBER.EMAIL 조회
-    4. MailService로 이메일 발송
-    5. SENDLOG에 성공/실패 기록
+    수신자:
+        MEMBER.EMAIL
     """
 
     # ----------------------------------------
-    # 환경변수 확인
+    # 이메일 정보 확인
     # ----------------------------------------
 
-    if not JAVA_BASE_URL:
-        print("\n========================================")
-        print("[EMAIL][CONFIG][FAIL] Java 서버 주소가 없습니다.")
-        print("========================================")
-        print("- 원인: JAVA_BASE_URL 환경변수가 설정되지 않았습니다.")
-        print("- 확인: .env 파일의 JAVA_BASE_URL")
-        print("- 예시: JAVA_BASE_URL=http://10.1.205.xxx:9102")
-        print("========================================\n")
-
+    if not to_email or not str(to_email).strip():
+        print("[EMAIL][FAIL] 수신 이메일 주소가 없습니다.")
+        print("- 확인: MEMBER.EMAIL")
         return False
 
-    # ----------------------------------------
-    # 알림번호 확인
-    # ----------------------------------------
-
-    if not notification_no:
-        print("\n[EMAIL][VALIDATION][FAIL] 알림번호가 없습니다.")
+    if not MAIL_USERNAME or not MAIL_PASSWORD:
+        print("[EMAIL][FAIL] SMTP 계정 설정이 없습니다.")
+        print("- 확인: .env의 MAIL_USERNAME / MAIL_PASSWORD")
         return False
 
-    url = f"{JAVA_BASE_URL.rstrip('/')}" f"/api/notifications/{notification_no}/email"
+    to_email = str(to_email).strip()
 
-    print(f"[EMAIL][START] 이메일 발송 요청 " f"(notification_no={notification_no})")
+    print(f"[EMAIL][START] 이메일 발송 시작 " f"(to={to_email})")
 
     # ----------------------------------------
-    # Java 이메일 API 호출
+    # AI 이슈맵 HTML
+    # ----------------------------------------
+
+    image_html = ""
+
+    if image_url:
+        image_html = f"""
+        <div style="margin-top:20px;">
+            <p><strong>이슈 발생 위치</strong></p>
+
+            <img
+                src="{image_url}"
+                alt="AI 이슈맵"
+                style="max-width:600px; width:100%; height:auto;"
+            />
+
+            <p>
+                <a href="{image_url}">
+                    이슈 위치 이미지 보기
+                </a>
+            </p>
+        </div>
+        """
+
+    # ----------------------------------------
+    # 이메일 본문
+    # ----------------------------------------
+
+    html_content = f"""
+    <div style="font-family:Arial,sans-serif; padding:20px;">
+
+        <h2>{title}</h2>
+
+        <p style="line-height:1.6;">
+            {content}
+        </p>
+
+        {image_html}
+
+    </div>
+    """
+
+    # ----------------------------------------
+    # 이메일 메시지 생성
+    # ----------------------------------------
+
+    message = MIMEMultipart("alternative")
+
+    message["From"] = MAIL_USERNAME
+    message["To"] = to_email
+    message["Subject"] = f"[Allimio] {title}"
+
+    message.attach(
+        MIMEText(
+            html_content,
+            "html",
+            "utf-8",
+        )
+    )
+
+    # ----------------------------------------
+    # Gmail SMTP 발송
     # ----------------------------------------
 
     try:
-        response = requests.post(
-            url,
-            timeout=10,
-        )
+        print(f"[EMAIL][SMTP] " f"{MAIL_HOST}:{MAIL_PORT} 연결")
 
-    # ----------------------------------------
-    # 연결 시간 초과
-    # ----------------------------------------
+        with smtplib.SMTP(
+            MAIL_HOST,
+            MAIL_PORT,
+            timeout=15,
+        ) as smtp:
 
-    except requests.exceptions.ConnectTimeout:
-        print("\n========================================")
-        print("[EMAIL][API][TIMEOUT] Java 서버 연결 시간 초과")
-        print("========================================")
-        print(f"- 알림번호: {notification_no}")
-        print(f"- Java 서버: {JAVA_BASE_URL}")
-        print(f"- 요청 URL: {url}")
-        print("- 원인: Java 서버에 연결하지 못했습니다.")
-        print("- 확인: Java 서버 실행 여부")
-        print("- 확인: 팀원 PC IP 주소")
-        print("- 확인: 9102 포트")
-        print("- 확인: 방화벽 및 네트워크 연결")
-        print("========================================\n")
+            # TLS 보안 연결
+            smtp.starttls()
 
-        return False
+            # 관리자 Gmail 로그인
+            smtp.login(
+                MAIL_USERNAME,
+                MAIL_PASSWORD,
+            )
 
-    # ----------------------------------------
-    # 응답 시간 초과
-    # ----------------------------------------
+            # 회원 이메일로 발송
+            smtp.sendmail(
+                MAIL_USERNAME,
+                [to_email],
+                message.as_string(),
+            )
 
-    except requests.exceptions.ReadTimeout:
-        print("\n========================================")
-        print("[EMAIL][API][READ_TIMEOUT] Java 서버 응답 시간 초과")
-        print("========================================")
-        print(f"- 알림번호: {notification_no}")
-        print(f"- Java 서버: {JAVA_BASE_URL}")
-        print("- 원인: Java 서버에는 연결되었지만 응답이 늦습니다.")
-        print("- 확인: Java 이메일 발송 처리 / SMTP 연결")
-        print("========================================\n")
-
-        return False
-
-    # ----------------------------------------
-    # Java 서버 연결 실패
-    # ----------------------------------------
-
-    except requests.exceptions.ConnectionError as e:
-        print("\n========================================")
-        print("[EMAIL][API][CONNECTION] Java 서버 연결 실패")
-        print("========================================")
-        print(f"- 알림번호: {notification_no}")
-        print(f"- Java 서버: {JAVA_BASE_URL}")
-        print(f"- 요청 URL: {url}")
-        print("- 원인: Java 서버에 연결할 수 없습니다.")
-        print("- 확인: Java 서버 실행 여부")
-        print("- 확인: 현재 Java 서버를 실행한 팀원 PC의 IP")
-        print("- 확인: Java 서버 포트 9102")
-        print(f"- 상세 오류: {e}")
-        print("========================================\n")
-
-        return False
-
-    # ----------------------------------------
-    # 기타 HTTP 요청 오류
-    # ----------------------------------------
-
-    except requests.RequestException as e:
-        print("\n========================================")
-        print("[EMAIL][API][REQUEST] 이메일 API 호출 오류")
-        print("========================================")
-        print(f"- 알림번호: {notification_no}")
-        print(f"- 요청 URL: {url}")
-        print(f"- 오류 타입: {type(e).__name__}")
-        print(f"- 상세 오류: {e}")
-        print("========================================\n")
-
-        return False
-
-    # ----------------------------------------
-    # 이메일 발송 성공
-    # ----------------------------------------
-
-    if response.status_code == 200:
-        print(
-            f"[EMAIL][SUCCESS] 이메일 발송 성공 " f"(notification_no={notification_no})"
-        )
+        print(f"[EMAIL][SUCCESS] 이메일 발송 성공 " f"(to={to_email})")
 
         return True
 
     # ----------------------------------------
-    # Java API 오류 응답
+    # Gmail 인증 실패
     # ----------------------------------------
 
-    _print_email_error(
-        notification_no=notification_no,
-        status_code=response.status_code,
-        response_text=response.text,
-    )
+    except smtplib.SMTPAuthenticationError as e:
+        print("[EMAIL][AUTH_FAIL] Gmail SMTP 인증 실패")
+        print("- 확인: MAIL_USERNAME")
+        print("- 확인: Google 앱 비밀번호")
+        print(f"- 상세 오류: {e}")
+        return False
 
-    return False
+    # ----------------------------------------
+    # 기타 SMTP 오류
+    # ----------------------------------------
+
+    except Exception as e:
+        print("[EMAIL][FAIL] 이메일 발송 오류")
+        print(f"- 수신자: {to_email}")
+        print(f"- 오류 타입: {type(e).__name__}")
+        print(f"- 상세 오류: {e}")
+        return False
