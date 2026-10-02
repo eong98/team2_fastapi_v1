@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 
 load_dotenv()
 
+
 # ========================================
 # Gmail SMTP 설정
 # ========================================
@@ -32,10 +33,17 @@ def send_notification_email(
     title: str,
     content: str,
     image_url: str | None = None,
-) -> bool:
+) -> tuple[bool, str]:
     """
     H200에서 Gmail SMTP를 이용하여
     회원 이메일로 CCTV 이슈 알림을 직접 발송한다.
+
+    반환:
+        성공:
+            (True, "이메일 발송 완료")
+
+        실패:
+            (False, "실패 사유")
 
     발신자:
         .env의 MAIL_USERNAME
@@ -49,14 +57,22 @@ def send_notification_email(
     # ----------------------------------------
 
     if not to_email or not str(to_email).strip():
-        print("[EMAIL][FAIL] 수신 이메일 주소가 없습니다.")
+
+        reason = "수신 이메일 주소가 없습니다."
+
+        print(f"[EMAIL][FAIL] {reason}")
         print("- 확인: MEMBER.EMAIL")
-        return False
+
+        return False, reason
 
     if not MAIL_USERNAME or not MAIL_PASSWORD:
-        print("[EMAIL][FAIL] SMTP 계정 설정이 없습니다.")
+
+        reason = "SMTP 계정 설정이 없습니다."
+
+        print(f"[EMAIL][FAIL] {reason}")
         print("- 확인: .env의 MAIL_USERNAME / MAIL_PASSWORD")
-        return False
+
+        return False, reason
 
     to_email = str(to_email).strip()
 
@@ -69,6 +85,7 @@ def send_notification_email(
     image_html = ""
 
     if image_url:
+
         image_html = f"""
         <div style="margin-top:20px;">
             <p><strong>이슈 발생 위치</strong></p>
@@ -128,6 +145,7 @@ def send_notification_email(
     # ----------------------------------------
 
     try:
+
         print(f"[EMAIL][SMTP] " f"{MAIL_HOST}:{MAIL_PORT} 연결")
 
         with smtplib.SMTP(
@@ -152,28 +170,93 @@ def send_notification_email(
                 message.as_string(),
             )
 
-        print(f"[EMAIL][SUCCESS] 이메일 발송 성공 " f"(to={to_email})")
+        reason = "이메일 발송 완료"
 
-        return True
+        print(f"[EMAIL][SUCCESS] " f"{reason} " f"(to={to_email})")
+
+        return True, reason
 
     # ----------------------------------------
     # Gmail 인증 실패
     # ----------------------------------------
 
     except smtplib.SMTPAuthenticationError as e:
-        print("[EMAIL][AUTH_FAIL] Gmail SMTP 인증 실패")
+
+        reason = "Gmail SMTP 인증 실패"
+
+        print(f"[EMAIL][AUTH_FAIL] {reason}")
         print("- 확인: MAIL_USERNAME")
         print("- 확인: Google 앱 비밀번호")
         print(f"- 상세 오류: {e}")
-        return False
+
+        return False, reason
 
     # ----------------------------------------
-    # 기타 SMTP 오류
+    # 수신자 거부
+    # ----------------------------------------
+
+    except smtplib.SMTPRecipientsRefused as e:
+
+        reason = "수신 이메일 주소가 거부되었습니다."
+
+        print(f"[EMAIL][RECIPIENT_FAIL] {reason}")
+        print(f"- 수신자: {to_email}")
+        print(f"- 상세 오류: {e}")
+
+        return False, reason
+
+    # ----------------------------------------
+    # 발신자 거부
+    # ----------------------------------------
+
+    except smtplib.SMTPSenderRefused as e:
+
+        reason = "SMTP 서버에서 발신자 주소를 거부했습니다."
+
+        print(f"[EMAIL][SENDER_FAIL] {reason}")
+        print(f"- 상세 오류: {e}")
+
+        return False, reason
+
+    # ----------------------------------------
+    # SMTP 연결 실패
+    # ----------------------------------------
+
+    except smtplib.SMTPConnectError as e:
+
+        reason = "Gmail SMTP 서버 연결에 실패했습니다."
+
+        print(f"[EMAIL][CONNECT_FAIL] {reason}")
+        print(f"- 서버: {MAIL_HOST}:{MAIL_PORT}")
+        print(f"- 상세 오류: {e}")
+
+        return False, reason
+
+    # ----------------------------------------
+    # SMTP 서버 오류
+    # ----------------------------------------
+
+    except smtplib.SMTPException as e:
+
+        reason = f"SMTP 발송 오류: {str(e)}"
+
+        print("[EMAIL][SMTP_FAIL] 이메일 발송 오류")
+        print(f"- 수신자: {to_email}")
+        print(f"- 상세 오류: {e}")
+
+        return False, reason
+
+    # ----------------------------------------
+    # 기타 오류
     # ----------------------------------------
 
     except Exception as e:
+
+        reason = f"이메일 발송 오류: " f"{type(e).__name__}: {str(e)}"
+
         print("[EMAIL][FAIL] 이메일 발송 오류")
         print(f"- 수신자: {to_email}")
         print(f"- 오류 타입: {type(e).__name__}")
         print(f"- 상세 오류: {e}")
-        return False
+
+        return False, reason
