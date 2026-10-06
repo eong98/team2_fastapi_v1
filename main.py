@@ -4,10 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from survey.router import router as survey_router
+from shopsurvey.router import router as shop_survey_router
 from aiissuemap.router import router as aiissuemap_router
 from cctv.router import router as cctv_router
 from notification.router import router as notification_router
 from chatbot.router import router as chatbot_router
+from shopmap.router import router as shopmap_router
 
 # FastAPI 앱 생성
 app = FastAPI(
@@ -43,6 +45,12 @@ app.include_router(notification_router)
 
 # 챗봇 상담 AI (RAG 검색) / 상담내용 요약 AI
 app.include_router(chatbot_router)
+
+# 매장 원본 도면 저장
+app.include_router(shopmap_router)
+
+# 매장 고객 설문 AI (요약 + 긍정/부정 점수)
+app.include_router(shop_survey_router)
 
 
 # ==============================

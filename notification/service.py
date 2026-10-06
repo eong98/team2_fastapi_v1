@@ -3,6 +3,7 @@ from datetime import datetime
 from core.database import get_connection
 from delivery.email import send_notification_email
 from delivery.sms import send_notification_sms
+from modules.translation import translate_notification
 
 # ========================================
 # Sequence
@@ -88,7 +89,8 @@ def process_cctv_issue(
     elif fsaved:
         print(
             f"[NOTIFICATION][AIMAP][SUCCESS] "
-            f"AI 이슈맵 조회 성공 (asmno={asmno}, fsaved={fsaved})"
+            f"AI 이슈맵 조회 성공 "
+            f"(asmno={asmno}, fsaved={fsaved})"
         )
 
     else:
@@ -115,6 +117,7 @@ def process_cctv_issue(
         print("\n[NOTIFICATION][MEMBER][FAIL] 알림 대상 회원이 없습니다.")
         print(f"- 매장번호: {sno}")
         print("- 확인: SHOP.MNO / SHOP_MEMBER.SNO / MEMBER")
+
         raise ValueError("알림을 받을 매장 회원이 없습니다.")
 
     print(f"[NOTIFICATION][MEMBER][SUCCESS] " f"알림 대상 {len(members)}명 조회")
@@ -129,17 +132,79 @@ def process_cctv_issue(
     for member in members:
 
         mno = member["mno"]
+        nation = member.get("nation")
 
         print("\n----------------------------------------")
         print(f"[NOTIFICATION][MEMBER][START] MNO={mno}")
+        print(f"- 국적: {nation}")
         print("----------------------------------------")
 
         try:
+
+            # ====================================
+            # 국적 → DB / 이메일용 언어 코드
+            # ====================================
+
+            language_map = {
+                "대한민국": "ko",
+                "미국": "en",
+                "일본": "ja",
+                "중국": "zh-CN",
+                "베트남": "vi",
+                "필리핀": "en",
+                "태국": "th",
+                "인도네시아": "id",
+                "대만": "zh-TW",
+                "캐나다": "en",
+                "영국": "en",
+                "독일": "de",
+                "프랑스": "fr",
+                "호주": "en",
+            }
+
+            lang = language_map.get(
+                str(nation).strip(),
+                "ko",
+            )
+
+            # ====================================
+            # 원본 알림
+            # ====================================
+
+            original_title = "CCTV 이슈 알림"
+            original_content = issue["content"]
+
+            # ====================================
+            # DB / 이메일용 번역
+            # ====================================
+
+            translated_title, translated_content = translate_notification(
+                title=original_title,
+                content=original_content,
+                lang=lang,
+            )
+
+            # 한국어 또는 번역 실패 시 원본 사용
+            final_title = translated_title or original_title
+            final_content = translated_content or original_content
+
+            print(
+                f"[NOTIFICATION][TRANSLATE] "
+                f"MNO={mno}, "
+                f"NATION={nation}, "
+                f"LANG={lang}"
+            )
+
+            # ====================================
+            # 회원별 알림 저장
+            # ====================================
+
             notification = create_notification(
                 cino=cino,
                 mno=mno,
                 asmno=asmno,
-                content=issue["content"],
+                title=final_title,
+                content=final_content,
             )
 
             print(
@@ -148,10 +213,15 @@ def process_cctv_issue(
                 f"(nno={notification['no']}, mno={mno})"
             )
 
+            # ====================================
+            # 이메일 / 문자 발송
+            # ====================================
+
             send_member_notification(
                 notification=notification,
                 member=member,
                 fsaved=fsaved,
+                issue_content=original_content,
             )
 
             success_count += 1
@@ -159,9 +229,11 @@ def process_cctv_issue(
             print(f"[NOTIFICATION][MEMBER][SUCCESS] " f"MNO={mno} 알림 처리 완료")
 
         except Exception as e:
+
             fail_count += 1
 
-            print("\n[NOTIFICATION][MEMBER][FAIL] 회원 알림 처리 실패")
+            print("\n[NOTIFICATION][MEMBER][FAIL] " "회원 알림 처리 실패")
+
             print(f"- 회원번호: {mno}")
             print(f"- 상세 오류: {e}")
 
@@ -170,6 +242,7 @@ def process_cctv_issue(
     # ----------------------------------------
 
     if fail_count == 0:
+
         update_cctv_notice(
             cino=cino,
             noticeyn="Y",
@@ -178,6 +251,7 @@ def process_cctv_issue(
         print(f"[NOTIFICATION][CCTV][SUCCESS] " f"CCTV_ISSUE.NOTICEYN=Y (cino={cino})")
 
     else:
+
         print(
             f"[NOTIFICATION][CCTV][SKIP] "
             f"발송 실패 {fail_count}건이 있어 "
@@ -216,6 +290,7 @@ def find_cctv_issue(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             """
             SELECT
@@ -251,10 +326,13 @@ def find_cctv_issue(
         }
 
     except Exception as e:
-        print("[NOTIFICATION][DB][FAIL] CCTV_ISSUE 조회 오류")
+
+        print("[NOTIFICATION][DB][FAIL] " "CCTV_ISSUE 조회 오류")
+
         print(f"- CINO: {cino}")
         print(f"- CNO: {cno}")
         print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
@@ -279,6 +357,7 @@ def find_ai_issue_map_file(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             """
             SELECT FSAVED
@@ -294,19 +373,24 @@ def find_ai_issue_map_file(
         row = cursor.fetchone()
 
         if row is None:
+
             print(
                 f"[NOTIFICATION][AIMAP][NOT_FOUND] "
                 f"정상 생성된 AI 이슈맵을 찾을 수 없습니다. "
                 f"(asmno={asmno})"
             )
+
             return None
 
         return row[0]
 
     except Exception as e:
-        print("[NOTIFICATION][AIMAP][DB_FAIL] AIISSUEMAP 조회 실패")
+
+        print("[NOTIFICATION][AIMAP][DB_FAIL] " "AIISSUEMAP 조회 실패")
+
         print(f"- ASMNO: {asmno}")
         print(f"- 상세 오류: {e}")
+
         return None
 
     finally:
@@ -320,18 +404,28 @@ def find_ai_issue_map_file(
 
 
 def find_members(sno: int) -> list[dict]:
-    """해당 매장의 점주 + 소속 직원을 조회한다."""
+    """
+    해당 매장의 점주 + 소속 직원을 조회한다.
+
+    점주:
+        SHOP.MNO
+
+    직원:
+        SHOP_MEMBER.SNO
+    """
 
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             """
             SELECT
                 M.NO,
                 M.EMAIL,
-                M.PHONE
+                M.PHONE,
+                M.NATION
             FROM MEMBER M
             WHERE M.NO = (
                 SELECT S.MNO
@@ -344,7 +438,8 @@ def find_members(sno: int) -> list[dict]:
             SELECT
                 M.NO,
                 M.EMAIL,
-                M.PHONE
+                M.PHONE,
+                M.NATION
             FROM SHOP_MEMBER SM
             JOIN MEMBER M
               ON SM.MNO = M.NO
@@ -362,14 +457,18 @@ def find_members(sno: int) -> list[dict]:
                 "mno": int(row[0]),
                 "email": row[1],
                 "phone": row[2],
+                "nation": row[3],
             }
             for row in rows
         ]
 
     except Exception as e:
-        print("[NOTIFICATION][MEMBER][DB_FAIL] 회원 조회 SQL 실패")
+
+        print("[NOTIFICATION][MEMBER][DB_FAIL] " "회원 조회 SQL 실패")
+
         print(f"- 매장번호: {sno}")
         print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
@@ -386,6 +485,7 @@ def create_notification(
     cino: int,
     mno: int,
     asmno: int | None,
+    title: str,
     content: str,
 ) -> dict:
     """회원 한 명당 NOTIFICATION 1건 저장."""
@@ -394,6 +494,7 @@ def create_notification(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(f"""
             SELECT {SEQ_NOTIFICATION}.NEXTVAL
             FROM DUAL
@@ -430,7 +531,7 @@ def create_notification(
                 "no": nno,
                 "cino": cino,
                 "mno": mno,
-                "atitle": "CCTV 이슈 알림",
+                "atitle": title,
                 "content": content,
                 "status": STATUS_READY,
                 "asmno": asmno,
@@ -444,16 +545,18 @@ def create_notification(
             "no": nno,
             "cino": cino,
             "mno": mno,
-            "title": "CCTV 이슈 알림",
+            "title": title,
             "content": content,
             "asmno": asmno,
             "status": STATUS_READY,
         }
 
     except Exception as e:
+
         conn.rollback()
 
-        print("\n[NOTIFICATION][DB][FAIL] NOTIFICATION 저장 실패")
+        print("\n[NOTIFICATION][DB][FAIL] " "NOTIFICATION 저장 실패")
+
         print(f"- CINO: {cino}")
         print(f"- MNO: {mno}")
         print(f"- ASMNO: {asmno}")
@@ -475,16 +578,34 @@ def send_member_notification(
     notification: dict,
     member: dict,
     fsaved: str | None = None,
+    issue_content: str = "",
 ):
-    """회원 한 명의 이메일/문자 알림을 발송한다."""
+    """
+    회원 한 명의 이메일 / 문자 알림을 발송한다.
+
+    이메일:
+        회원 국적에 맞는 언어로 발송
+
+    문자:
+        대한민국 → 한국어
+        그 외 국가 → 영어
+
+    EMAIL / SMS 각각의 발송 결과를
+    SENDLOG에 별도로 저장한다.
+
+    AI 이슈맵이 존재하면
+    이메일과 문자에 이미지 조회 주소를 추가한다.
+    """
 
     nno = notification["no"]
     mno = member["mno"]
 
     email = member.get("email")
     phone = member.get("phone")
+    nation = str(member.get("nation") or "").strip()
 
     try:
+
         # READY → SENDING
         update_notification_status(
             nno=nno,
@@ -494,69 +615,234 @@ def send_member_notification(
         print(f"[NOTIFICATION][STATUS] " f"NNO={nno} READY → SENDING")
 
         # ====================================
+        # AI 이슈맵 주소 생성
+        # ====================================
+
+        image_url = None
+
+        if fsaved:
+            image_url = "http://139.150.91.194:11200" "/api/aiissuemap/image/" + fsaved
+
+        # ====================================
         # 이메일 발송
         # ====================================
 
         email_success = False
+        email_result_message = "수신 이메일 주소가 없습니다."
 
         if email and str(email).strip():
 
+            email = str(email).strip()
+
             print(f"[NOTIFICATION][EMAIL][START] " f"MNO={mno}, NNO={nno}")
 
-            email_success = send_notification_email(
-                notification_no=nno,
+            # email.py
+            # (성공여부, 결과메시지) 반환
+            email_success, email_result_message = send_notification_email(
+                to_email=email,
+                title=notification["title"],
+                content=notification["content"],
+                image_url=image_url,
             )
 
             if email_success:
-                print(f"[NOTIFICATION][EMAIL][SUCCESS] " f"MNO={mno}")
+
+                print(
+                    f"[NOTIFICATION][EMAIL][SUCCESS] "
+                    f"MNO={mno}, "
+                    f"MESSAGE={email_result_message}"
+                )
+
             else:
-                print(f"[NOTIFICATION][EMAIL][FAIL] " f"MNO={mno}")
+
+                print(
+                    f"[NOTIFICATION][EMAIL][FAIL] "
+                    f"MNO={mno}, "
+                    f"REASON={email_result_message}"
+                )
 
         else:
+
             print(
                 f"[NOTIFICATION][EMAIL][SKIP] "
-                f"MNO={mno} DB에 이메일 주소가 없습니다."
+                f"MNO={mno} "
+                f"DB에 이메일 주소가 없습니다."
             )
+
+        # ------------------------------------
+        # EMAIL SENDLOG 저장
+        # ------------------------------------
+
+        save_send_log(
+            nno=nno,
+            channel="EMAIL",
+            status=1 if email_success else 0,
+            message=email_result_message,
+        )
+
+        print(
+            f"[NOTIFICATION][SENDLOG][EMAIL] "
+            f"NNO={nno}, "
+            f"STATUS={1 if email_success else 0}, "
+            f"MESSAGE={email_result_message}"
+        )
 
         # ====================================
         # 문자 발송
         # ====================================
 
         sms_success = False
+        sms_result_message = "수신 전화번호가 없습니다."
 
         if phone and str(phone).strip():
 
             phone = str(phone).replace("-", "").strip()
 
-            sms_message = notification["content"]
+            # --------------------------------
+            # 대한민국 → 한국어
+            # --------------------------------
 
-            # AI 이슈맵 존재 시 이미지 조회 주소 추가
-            if fsaved:
-                image_url = (
-                    "http://10.1.205.118:11200" "/api/aiissuemap/image/" + fsaved
+            if nation == "대한민국":
+
+                sms_message = (
+                    "[Allimio 안전 알림]\n\n"
+                    "매장 CCTV에서 이상 상황이 감지되었습니다.\n\n"
+                    f"■ 감지 내용: {issue_content}\n"
+                    f"■ 발생 시각: {_now()}\n\n"
+                    "현장 상황을 확인해 주세요."
                 )
 
-                sms_message += f"\n이슈 위치: {image_url}"
+                print(
+                    f"[NOTIFICATION][SMS][LANG] "
+                    f"MNO={mno}, "
+                    f"NATION={nation}, "
+                    f"LANG=ko"
+                )
+
+            # --------------------------------
+            # 해외 → 영어
+            # --------------------------------
+
+            else:
+
+                _, sms_content = translate_notification(
+                    title="CCTV 이슈 알림",
+                    content=issue_content,
+                    lang="en",
+                )
+
+                # 번역 실패 시 원본 내용 사용
+                translated_issue = sms_content or issue_content
+
+                sms_message = (
+                    "[Allimio Safety Alert]\n\n"
+                    "An abnormal situation has been detected "
+                    "by the store CCTV.\n\n"
+                    f"■ Detected issue: {translated_issue}\n"
+                    f"■ Detected at: {_now()}\n\n"
+                    "Please check the situation."
+                )
+
+                print(
+                    f"[NOTIFICATION][SMS][LANG] "
+                    f"MNO={mno}, "
+                    f"NATION={nation}, "
+                    f"LANG=en"
+                )
+
+            # --------------------------------
+            # AI 이슈맵 URL
+            # --------------------------------
+
+            if image_url:
+
+                if nation == "대한민국":
+
+                    sms_message += (
+                        "\n\n"
+                        "AI 이슈 도면\n"
+                        f"{image_url}\n\n"
+                        "- Allimio 매장 안전관리 서비스"
+                    )
+
+                else:
+
+                    sms_message += (
+                        "\n\n"
+                        "AI Issue Map\n"
+                        f"{image_url}\n\n"
+                        "- Allimio Store Safety Management"
+                    )
+
+            else:
+
+                if nation == "대한민국":
+
+                    sms_message += "\n\n" "- Allimio 매장 안전관리 서비스"
+
+                else:
+
+                    sms_message += "\n\n" "- Allimio Store Safety Management"
+
+            # --------------------------------
+            # 문자 발송
+            # --------------------------------
 
             print(f"[NOTIFICATION][SMS][START] " f"MNO={mno}, NNO={nno}")
 
-            sms_success = send_notification_sms(
+            # sms.py
+            # (성공여부, 결과메시지) 반환
+            sms_success, sms_result_message = send_notification_sms(
                 phone=phone,
                 message=sms_message,
             )
 
             if sms_success:
-                print(f"[NOTIFICATION][SMS][SUCCESS] " f"MNO={mno}")
+
+                print(
+                    f"[NOTIFICATION][SMS][SUCCESS] "
+                    f"MNO={mno}, "
+                    f"MESSAGE={sms_result_message}"
+                )
+
             else:
-                print(f"[NOTIFICATION][SMS][FAIL] " f"MNO={mno}")
+
+                print(
+                    f"[NOTIFICATION][SMS][FAIL] "
+                    f"MNO={mno}, "
+                    f"REASON={sms_result_message}"
+                )
 
         else:
-            print(f"[NOTIFICATION][SMS][SKIP] " f"MNO={mno} DB에 전화번호가 없습니다.")
+
+            print(
+                f"[NOTIFICATION][SMS][SKIP] " f"MNO={mno} " f"DB에 전화번호가 없습니다."
+            )
+
+        # ------------------------------------
+        # SMS SENDLOG 저장
+        # ------------------------------------
+
+        save_send_log(
+            nno=nno,
+            channel="SMS",
+            status=1 if sms_success else 0,
+            message=sms_result_message,
+        )
+
+        print(
+            f"[NOTIFICATION][SENDLOG][SMS] "
+            f"NNO={nno}, "
+            f"STATUS={1 if sms_success else 0}, "
+            f"MESSAGE={sms_result_message}"
+        )
 
         # ====================================
         # 최종 발송 결과 판단
         # ====================================
 
+        # 이메일 또는 문자 중 하나라도 성공하면
+        # 전체 NOTIFICATION은 SENT 처리
         if email_success or sms_success:
 
             update_notification_status(
@@ -568,11 +854,17 @@ def send_member_notification(
 
             return {
                 "success": True,
-                "email": email_success,
-                "sms": sms_success,
+                "email": {
+                    "success": email_success,
+                    "message": email_result_message,
+                },
+                "sms": {
+                    "success": sms_success,
+                    "message": sms_result_message,
+                },
             }
 
-        # 이메일과 문자 모두 실패 또는 발송 불가
+        # 이메일 / 문자 모두 실패
         update_notification_status(
             nno=nno,
             status=STATUS_FAILED,
@@ -587,17 +879,22 @@ def send_member_notification(
     except Exception as e:
 
         try:
+
             update_notification_status(
                 nno=nno,
                 status=STATUS_FAILED,
             )
+
         except Exception as status_error:
+
             print(
                 f"[NOTIFICATION][STATUS][FAIL] "
-                f"FAILED 상태 변경 실패: {status_error}"
+                f"FAILED 상태 변경 실패: "
+                f"{status_error}"
             )
 
-        print("\n[NOTIFICATION][SEND][FAIL] 회원 알림 발송 실패")
+        print("\n[NOTIFICATION][SEND][FAIL] " "회원 알림 발송 실패")
+
         print(f"- 회원번호: {mno}")
         print(f"- 알림번호: {nno}")
         print(f"- 상세 오류: {e}")
@@ -620,6 +917,7 @@ def update_notification_status(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             """
             UPDATE NOTIFICATION
@@ -633,14 +931,16 @@ def update_notification_status(
         )
 
         if cursor.rowcount == 0:
-            raise ValueError(f"NOTIFICATION을 찾을 수 없습니다. (nno={nno})")
+            raise ValueError(f"NOTIFICATION을 찾을 수 없습니다. " f"(nno={nno})")
 
         conn.commit()
 
     except Exception as e:
+
         conn.rollback()
 
-        print("[NOTIFICATION][STATUS][DB_FAIL] 상태 변경 실패")
+        print("[NOTIFICATION][STATUS][DB_FAIL] " "상태 변경 실패")
+
         print(f"- NNO: {nno}")
         print(f"- 변경 상태: {status}")
         print(f"- 상세 오류: {e}")
@@ -669,6 +969,7 @@ def save_send_log(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             f"""
             INSERT INTO SENDLOG (
@@ -700,9 +1001,11 @@ def save_send_log(
         conn.commit()
 
     except Exception as e:
+
         conn.rollback()
 
-        print("[NOTIFICATION][SENDLOG][FAIL] SENDLOG 저장 실패")
+        print("[NOTIFICATION][SENDLOG][FAIL] " "SENDLOG 저장 실패")
+
         print(f"- NNO: {nno}")
         print(f"- CHANNEL: {channel}")
         print(f"- 상세 오류: {e}")
@@ -729,6 +1032,7 @@ def update_cctv_notice(
     cursor = conn.cursor()
 
     try:
+
         cursor.execute(
             """
             UPDATE CCTV_ISSUE
@@ -742,14 +1046,16 @@ def update_cctv_notice(
         )
 
         if cursor.rowcount == 0:
-            raise ValueError(f"CCTV_ISSUE를 찾을 수 없습니다. (cino={cino})")
+            raise ValueError(f"CCTV_ISSUE를 찾을 수 없습니다. " f"(cino={cino})")
 
         conn.commit()
 
     except Exception as e:
+
         conn.rollback()
 
-        print("[NOTIFICATION][CCTV][DB_FAIL] NOTICEYN 변경 실패")
+        print("[NOTIFICATION][CCTV][DB_FAIL] " "NOTICEYN 변경 실패")
+
         print(f"- CINO: {cino}")
         print(f"- NOTICEYN: {noticeyn}")
         print(f"- 상세 오류: {e}")

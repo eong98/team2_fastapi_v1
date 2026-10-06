@@ -65,3 +65,34 @@ class CctvIssueReportResponse(BaseModel):
     x: Optional[float] = None      # 도면 좌표 0~1
     y: Optional[float] = None
     notify: bool = False           # 신뢰도 기준을 넘어 알림 대상인지
+
+
+# ===========================================================================
+# [추가] CCTV 이슈 AI 검토 (cctv/agent) - 이용자 화면 "AI 검토" 버튼이 호출
+# ===========================================================================
+
+class CctvIssueReviewRequest(BaseModel):
+    """POST /api/cctv/issue/{no}/review 요청 본문."""
+
+    sno: Optional[int] = None      # 화면에서 선택한 매장 번호. 보내면 그 매장의 이슈인지 확인한다
+
+
+class CctvIssueReviewStep(BaseModel):
+    """에이전트가 조회한 기록 1건 (화면의 '조회한 근거' 목록)."""
+
+    tool: str                      # 도구 이름 (recent_issues 등)
+    label: str                     # 화면 표시용 한글 이름
+    summary: str                   # 조회 결과 한 줄 요약 (LLM이 아니라 서버 코드가 만든 문장)
+
+
+class CctvIssueReviewResponse(BaseModel):
+    no: int                        # CCTV_ISSUE 번호
+    code: str
+    codeName: str
+    verdict: str                   # LIKELY_TRUE | LIKELY_FALSE | UNCERTAIN
+    verdictLabel: str              # 정탐 가능성 높음 | 오탐 가능성 높음 | 판단 보류
+    reasons: List[str]             # 판단 근거 (최대 4개)
+    recommendation: str            # 권장 조치
+    steps: List[CctvIssueReviewStep] = []
+    fallback: bool = False         # True면 AI가 판단을 끝내지 못해 조회 기록만 제공한 것
+    elapsedMs: int = 0

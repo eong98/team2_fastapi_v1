@@ -6,6 +6,10 @@ from modules.sentiment import analyze_sentiment
 from modules.summary import analyze_summary
 
 
+# ========================================
+# 1. 설문 전체 응답 조회
+# ========================================
+
 def get_survey_answers(survey_no: int) -> list[dict]:
     """
     특정 설문의 모든 회원 응답을 Oracle DB에서 조회한다.
@@ -67,6 +71,10 @@ def get_survey_answers(survey_no: int) -> list[dict]:
         connection.close()
 
 
+# ========================================
+# 2. 설문 AI 분석 실행
+# ========================================
+
 def analyze_survey(survey_no: int) -> dict:
     """
     특정 설문의 전체 응답을 조회하고
@@ -108,6 +116,10 @@ def analyze_survey(survey_no: int) -> dict:
     return result
 
 
+# ========================================
+# 3. AI 분석 결과 저장
+# ========================================
+
 def save_analysis(result: dict):
     """
     AI 분석 결과를 SURVEYANALYSIS에 저장한다.
@@ -137,6 +149,10 @@ def save_analysis(result: dict):
             "%Y-%m-%d %H:%M:%S"
         )
 
+        # ----------------------------------------
+        # 기존 분석 결과가 있으면 UPDATE
+        # ----------------------------------------
+
         if existing:
 
             cursor.execute(
@@ -163,6 +179,10 @@ def save_analysis(result: dict):
                 cdate=cdate,
                 survey_no=survey_no
             )
+
+        # ----------------------------------------
+        # 기존 분석 결과가 없으면 INSERT
+        # ----------------------------------------
 
         else:
 
@@ -208,6 +228,113 @@ def save_analysis(result: dict):
 
     except Exception:
         connection.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# ========================================
+# 4. 기존 AI 분석 결과 조회
+# ========================================
+
+def get_survey_analysis(survey_no: int) -> dict | None:
+    """
+    SURVEYANALYSIS에 저장된 기존 AI 분석 결과를 조회한다.
+
+    분석 결과가 아직 없는 경우
+    오류를 발생시키지 않고 None을 반환한다.
+    """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+
+        cursor.execute(
+            """
+            SELECT
+                NO,
+                SVNO,
+                AISCORE,
+                POSITIVE_RATE,
+                NEUTRAL_RATE,
+                NEGATIVE_RATE,
+                SUMMARY,
+                POSITIVE_SUMMARY,
+                NEGATIVE_SUMMARY,
+                CDATE
+            FROM SURVEYANALYSIS
+            WHERE SVNO = :survey_no
+            """,
+            survey_no=survey_no
+        )
+
+        row = cursor.fetchone()
+
+        # ----------------------------------------
+        # 분석 결과 없음
+        # ----------------------------------------
+
+        if row is None:
+
+            print(
+                f"[SURVEY][ANALYSIS][NOT_FOUND] "
+                f"저장된 AI 분석 결과 없음 "
+                f"(survey_no={survey_no})"
+            )
+
+            return None
+
+        # ----------------------------------------
+        # Oracle CLOB 처리
+        # ----------------------------------------
+
+        summary = row[6]
+        positive_summary = row[7]
+        negative_summary = row[8]
+
+        if hasattr(summary, "read"):
+            summary = summary.read()
+
+        if hasattr(positive_summary, "read"):
+            positive_summary = positive_summary.read()
+
+        if hasattr(negative_summary, "read"):
+            negative_summary = negative_summary.read()
+
+        result = {
+            "surveyNo": int(row[1]),
+            "aiScore": float(row[2]),
+
+            "positiveRate": float(row[3]),
+            "neutralRate": float(row[4]),
+            "negativeRate": float(row[5]),
+
+            "summary": summary or "",
+            "positiveSummary": positive_summary or "",
+            "negativeSummary": negative_summary or ""
+        }
+
+        print(
+            f"[SURVEY][ANALYSIS][SUCCESS] "
+            f"기존 AI 분석 결과 조회 성공 "
+            f"(survey_no={survey_no})"
+        )
+
+        return result
+
+    except Exception as e:
+
+        print(
+            f"[SURVEY][ANALYSIS][FAIL] "
+            f"기존 AI 분석 결과 조회 실패 "
+            f"(survey_no={survey_no})"
+        )
+
+        print(f"- 상세 오류: {e}")
+
         raise
 
     finally:
