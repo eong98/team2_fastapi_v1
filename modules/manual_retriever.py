@@ -24,9 +24,8 @@ _vectorstore = None  # 모듈 로드 시 한 번만 연결, 매 요청마다 재
 
 
 def _get_embedding():
-    base_url = "http://localhost:11434"
-    
-    return OllamaEmbeddings(model="bge-m3", base_url=base_url)
+    # 주소를 안 주면 같은 컴퓨터의 Ollama(localhost:11434)를 씀 (gemma와 동일)
+    return OllamaEmbeddings(model="bge-m3")
 
 
 def _get_vectorstore():

@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 
+chatbot/data/chromadb_manual/chroma.sqlite3

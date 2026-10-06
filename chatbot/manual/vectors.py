@@ -2,9 +2,7 @@
 매뉴얼 벡터DB(ChromaDB, bge-m3) — 벡터화/삭제/조회/유사도 검색. AI 상담 검색과 같은 DB.
 """
 
-import json
 import os
-import urllib.request
 
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import TextLoader
@@ -13,12 +11,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from modules.manual_retriever import safe_similarity_search
 
-from chatbot.manual.config import CHROMA_PERSIST_DIRECTORY, EMBED_BASE_URL, EMBED_MODEL
+from chatbot.manual.config import CHROMA_PERSIST_DIRECTORY, EMBED_MODEL
 
 
 def _get_chroma_embedding():
-    """modules/manual_retriever.py의 _get_embedding()과 동일한 설정(bge-m3)."""
-    return OllamaEmbeddings(model=EMBED_MODEL, base_url=EMBED_BASE_URL)
+    """modules/manual_retriever.py의 _get_embedding()과 동일한 설정(bge-m3).
+    주소를 안 주면 같은 컴퓨터의 Ollama(localhost:11434)를 씀 (gemma와 동일)."""
+    return OllamaEmbeddings(model=EMBED_MODEL)
 
 
 def _ensure_embedding_model() -> None:
@@ -26,14 +25,14 @@ def _ensure_embedding_model() -> None:
     Ollama에 bge-m3 임베딩 모델이 설치되어 있는지 확인합니다.
     벡터DB가 bge-m3로 만들어져 있어 다른 모델로는 대체할 수 없으므로, 없으면 설치 안내와 함께 중단.
     """
+    # validate_model_on_init: 만들 때 LangChain이 Ollama 설치 모델 목록을 확인
+    #  → 모델이 없거나 Ollama가 꺼져 있으면 ValueError
     try:
-        with urllib.request.urlopen(f"{EMBED_BASE_URL}/api/tags", timeout=5) as res:
-            names = [m.get("name", "") for m in json.load(res).get("models", [])]
-    except Exception as e:
-        raise RuntimeError(f"Ollama({EMBED_BASE_URL})에 연결할 수 없습니다: {e}")
-    if not any(n.split(":")[0] == EMBED_MODEL for n in names):
+        OllamaEmbeddings(model=EMBED_MODEL, validate_model_on_init=True)
+    except ValueError as e:
         raise RuntimeError(
-            f"{EMBED_MODEL} 임베딩 모델이 없습니다. 서버에서 'ollama pull {EMBED_MODEL}'을 실행해주세요."
+            f"{EMBED_MODEL} 임베딩 모델을 사용할 수 없습니다. "
+            f"Ollama가 켜져 있는지, 서버에서 'ollama pull {EMBED_MODEL}'을 실행했는지 확인해주세요. ({e})"
         )
 
 

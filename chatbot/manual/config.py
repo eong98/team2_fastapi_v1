@@ -41,7 +41,6 @@ AI_YN_MANUAL = "N"       # 관리자가 추가/수정한 노드 (재생성 시 �
 EMBED_MODEL = "bge-m3"
 
 
-EMBED_BASE_URL = "http://localhost:11434"
 
 
 MAX_CHILDREN = 5          # 한 부모 아래 하위메뉴 최대 개수
