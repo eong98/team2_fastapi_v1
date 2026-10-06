@@ -44,3 +44,4 @@ class ShopSurveySummaryResponse(BaseModel):
     summary: str
     score: float  # 0 = 매우 부정, 5 = 중립, 10 = 매우 긍정
     reason: str
+    weakPoints: list[str] = Field(default_factory=list)  # 약한 항목 (AI 자동작성 참고용)
