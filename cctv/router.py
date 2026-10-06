@@ -6,6 +6,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from cctv.schema import (
     CctvIssueReportRequest,
     CctvIssueReportResponse,
+    CctvIssueReviewRequest,      # [추가] AI 검토
+    CctvIssueReviewResponse,     # [추가] AI 검토
     CctvVisitorEnterRequest,
     CctvVisitorExitRequest,
     CctvVisitorResponse,
@@ -67,6 +69,49 @@ def report(request: CctvIssueReportRequest, background: BackgroundTasks):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CCTV 이슈 저장 실패: {str(e)}")
+
+
+# ===========================================================================
+# [추가] CCTV 이슈 AI 검토 (에이전트)
+# ===========================================================================
+
+@router.post("/issue/{no}/review", response_model=CctvIssueReviewResponse)
+def review(no: int, request: CctvIssueReviewRequest):
+    """
+    이슈 1건을 AI 에이전트가 검토해 "정탐/오탐 가능성 + 근거 + 권장 조치"를 돌려준다.
+
+    에이전트는 같은 CCTV의 최근 이슈, 과거 오탐률, 발생 시각 방문객, 매장 일정, CCTV 상태 중
+    필요한 것을 스스로 골라 조회한다(cctv/agent/review.py). 조회만 하고 DB는 바꾸지 않는다 -
+    정탐/오탐 확정은 지금처럼 화면의 버튼(Spring PUT /cctv_issue/update)으로 사람이 한다.
+
+    LLM을 여러 번 호출하므로 수 초~수십 초가 걸린다. 그래서 Jetson 접수 경로(/issue/report)에
+    끼우지 않고, 사용자가 버튼을 눌렀을 때만 실행하는 별도 엔드포인트로 뒀다.
+    async가 아닌 def라서 FastAPI가 스레드풀에서 실행한다 -> 검토 중에도 다른 요청은 막히지 않는다.
+    """
+    try:
+        # 함수 안에서 import: 에이전트 쪽(langgraph 등)에 문제가 생겨도 이 파일 전체가
+        # import 실패로 죽지 않게 한다. 맨 위에서 import하면 Jetson 이슈 접수까지 같이 멈춘다.
+        from cctv.agent.review import review_issue
+
+        return review_issue(no=no, sno=request.sno)
+
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    except Exception as e:
+        # [추가] HTTPException으로 바꿔 던지면 uvicorn 로그에는 "500" 한 줄만 남고 원인이 안 보인다.
+        # 어디서 터졌는지 서버 터미널에서 바로 볼 수 있게 traceback을 찍는다.
+        import traceback
+
+        print(f"[cctv_review] 검토 실패 (no={no}): {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"CCTV 이슈 AI 검토 실패: {type(e).__name__}: {str(e)}",
+        )
 
 
 # ===========================================================================
