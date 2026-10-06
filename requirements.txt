@@ -13,3 +13,5 @@ langchain-ollama
 langchain-chroma
 langchain-community
 langchain-text-splitters
+langgraph
+requests

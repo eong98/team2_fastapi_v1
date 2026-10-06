@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from survey.router import router as survey_router
+from shopsurvey.router import router as shop_survey_router
 from aiissuemap.router import router as aiissuemap_router
 from cctv.router import router as cctv_router
 from notification.router import router as notification_router
@@ -47,6 +48,9 @@ app.include_router(chatbot_router)
 
 # 매장 원본 도면 저장
 app.include_router(shopmap_router)
+
+# 매장 고객 설문 AI (요약 + 긍정/부정 점수)
+app.include_router(shop_survey_router)
 
 
 # ==============================
