@@ -106,6 +106,7 @@ class NewsArticle(BaseModel):
     link: Optional[str] = None
     source: Optional[str] = None
     date: Optional[str] = None
+    content: Optional[str] = None   # 기사 요약 (Tavily)
 
 
 class ShopSurveyGenerateResponse(BaseModel):

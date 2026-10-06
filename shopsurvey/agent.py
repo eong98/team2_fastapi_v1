@@ -177,7 +177,7 @@ graph_builder.add_node("infer_industry", infer_industry_node)
 
 
 def search_trends_node(state: State):
-    """업종 트렌드 뉴스 검색 (구글 뉴스 RSS). 기사가 없으면 안내 문구만 남긴다."""
+    """업종 트렌드 뉴스 검색 (Tavily). 기사가 없으면 안내 문구만 남긴다."""
 
     articles = search_trend_news(state.get("industry") or "")
     if not articles:
@@ -237,7 +237,10 @@ def generate_node(state: State):
 - notes에는 무엇을 어떻게 고쳤는지 짧게
 """
     else:  # trend
-        headlines = [a["title"] for a in state.get("articles") or []]
+        headlines = [
+            {"제목": a["title"], "요약": a.get("content") or ""}
+            for a in state.get("articles") or []
+        ]
         task = f"""
 [작업] 업종 트렌드 문항 추가
 매장명: {shop_title}
@@ -246,12 +249,12 @@ def generate_node(state: State):
 [현재 설문]
 {_form_json(state.get("current_form"))}
 
-[최근 업종 뉴스 제목]
+[최근 업종 뉴스 (제목 + 요약)]
 {json.dumps(headlines, ensure_ascii=False, indent=2)}
 
 [작성 방법]
 - 기존 문항은 순서와 내용을 그대로 유지할 것
-- 뉴스 제목 중 이 매장 손님에게 물어볼 만한 트렌드(신제품, 맛, 식감, 서비스 등)만 골라
+- 뉴스 중 이 매장 손님에게 물어볼 만한 트렌드(신제품, 맛, 식감, 서비스 등)만 골라
   손님 의향을 묻는 문항을 1~2개 추가 (관련 없는 기사는 무시)
 - 새 문항은 전반적 만족도/자유 의견 문항 바로 앞에 넣을 것
 - 기사 속 숫자나 주장을 문항에 그대로 쓰지 말고, 물어볼 주제로만 사용
