@@ -139,15 +139,23 @@ async def process_ai_chat(sno: str, message: str) -> dict:
     (async 함수 안에서 그대로 부르면 LLM이 답하는 수십 초 동안 서버 전체가 멈춰서,
      다른 사용자의 요청·WebSocket·옵션생성 진행률 조회까지 모두 대기하게 됨)
     """
-    result = await asyncio.to_thread(_process_ai_chat_sync, sno, message)
+    message = (message or "").strip()
+    history = await asyncio.to_thread(_save_ai_question, sno, message)
 
+    # 질문 저장 직후 알림 — 같은 상담방을 다른 브라우저·기기에서도 열어 둔 경우, 답변이 끝날 때까지
+    # 기다리지 않고 바로 질문과 "AI 입력 중"을 보여주게 함 (예전엔 답변 완료 알림만 있어서
+    # 다른 쪽 화면엔 질문이 답변과 함께 한꺼번에 나타났음)
     mno, gno = await asyncio.to_thread(get_session_owner, sno)
+    await ws_manager.notify(mno, gno, {"type": "ai_responding", "sno": sno})
+
+    result = await asyncio.to_thread(_process_ai_chat_sync, sno, message, history)
+
     await ws_manager.notify(mno, gno, {"type": "new_message", "sno": sno})
     return result
 
 
-def _process_ai_chat_sync(sno: str, message: str) -> dict:
-    message = (message or "").strip()
+def _save_ai_question(sno: str, message: str) -> list:
+    """질문 검증·저장 + 응답 생성 중(ENDFLOW=6) 표시. 질문 저장 전의 대화 기록을 돌려줌 (LLM 문맥용)."""
     if not message:
         raise ChatRequestError("메시지를 입력해주세요.")
     ensure_session_open(sno)
@@ -156,7 +164,10 @@ def _process_ai_chat_sync(sno: str, message: str) -> dict:
 
     create_chat_log(sno, SENDER_USER, MTYPE_FREE_TEXT, message)
     update_endflow(sno, ENDFLOW_AI_RESPONDING)  # LLM 호출 시작 직전에 저장
+    return history
 
+
+def _process_ai_chat_sync(sno: str, message: str, history: list) -> dict:
     try:
         try:
             result = answer_question(message, history)
