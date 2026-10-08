@@ -256,22 +256,9 @@ def search_node(state: State):
 graph_builder.add_node("search", search_node)
 
 
-# 답변 생성 노드
-def generate_node(state: State):
-    """
-    통합 프롬프트로 1회 LLM 호출해서 답변+needsAdmin을 생성합니다.
-    (단순인사/일상대화-잡담/서비스질문+자료있음/서비스질문+자료없음 4단계 지침 포함)
-    check_greeting_node에서 안 걸러진 인사 변형이나 잡담은 여기서 1번/2번 지침으로 처리됩니다.
-    """
-    message = state["message"]
-    history = state.get("history") or []
-    context = state.get("docs_context", "없음")
-
-    print(f"[멀티턴 디버깅] history 길이: {len(history)}개")
-    for h in history:
-        print(f"  - {type(h).__name__}: {h.content[:50]}")
-
-    system_prompt = f"""
+def build_system_prompt(context: str) -> str:
+    """AI 상담 답변 프롬프트 — 챗봇 AI 상담(generate_node)과 1:1 문의 자동 답변(answer_for_qa)이 같이 씀."""
+    return f"""
 당신은 Allimio 서비스의 AI 상담원 '알리미'입니다.
 사용자의 메시지와 아래 [참고 자료]를 종합적으로 판단하여 적절히 답변하세요.
 
@@ -313,6 +300,24 @@ def generate_node(state: State):
 [참고 자료]
 {context}
 """
+
+
+# 답변 생성 노드
+def generate_node(state: State):
+    """
+    통합 프롬프트로 1회 LLM 호출해서 답변+needsAdmin을 생성합니다.
+    (단순인사/일상대화-잡담/서비스질문+자료있음/서비스질문+자료없음 4단계 지침 포함)
+    check_greeting_node에서 안 걸러진 인사 변형이나 잡담은 여기서 1번/2번 지침으로 처리됩니다.
+    """
+    message = state["message"]
+    history = state.get("history") or []
+    context = state.get("docs_context", "없음")
+
+    print(f"[멀티턴 디버깅] history 길이: {len(history)}개")
+    for h in history:
+        print(f"  - {type(h).__name__}: {h.content[:50]}")
+
+    system_prompt = build_system_prompt(context)
 
     result = structured_answer_llm.invoke(
         [SystemMessage(content=system_prompt), *history, HumanMessage(content=message)]
