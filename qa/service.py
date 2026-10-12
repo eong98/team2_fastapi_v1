@@ -11,6 +11,8 @@ qa/service.py
   - 인사·뜻 모를 입력·관리자 연결 요청 (LLM 호출 없음)
   - 매뉴얼 검색 결과가 문턱(RELEVANCE_THRESHOLD)을 넘는 게 하나도 없음 (LLM 호출 없음)
   - AI가 매뉴얼 내용으로 답하지 않았거나(fromManual=False) 관리자 확인이 필요하다고 판단(needsAdmin=True)
+  - 질문의 일부라도 정보를 찾지 못함 (complete=False 또는 답변에 "찾지 못했습니다"·"연결해 드릴까요" 같은 문구)
+    → 게시판 답변은 채팅처럼 이어서 물어볼 수 없으므로, 일부만 답하고 나머지를 모른다고 하는 답변은 등록하지 않음
   - 답변이 비었거나 폴백 문구
 """
 
@@ -40,7 +42,37 @@ class QaAnswer(ChatAnswer):
     )
 
 
+    complete: bool = Field(
+        description=(
+            "질문에서 물어본 모든 내용을 [참고 자료]로 답했으면 true. "
+            "질문 중 일부라도 정보를 찾지 못했거나, 찾지 못했다는 안내·담당자 연결 안내를 답변에 넣었으면 false"
+        )
+    )
+
+
 structured_qa_llm = llm.with_structured_output(QaAnswer)
+
+# 답변에 이런 말이 들어 있으면 "정보를 찾지 못한 부분이 있다"는 뜻 → 등록하지 않음
+# (AI가 complete를 true로 잘못 표시한 경우를 한 번 더 걸러 내는 안전장치)
+UNKNOWN_PHRASES = (
+    "찾지 못했",
+    "찾을 수 없",
+    "확인되지 않",
+    "확인할 수 없",
+    "정보가 없",
+    "안내해 드리기 어렵",
+    "답변드리기 어렵",
+    "답변해 드리기 어렵",
+    "연결해 드릴까요",
+    "담당자",
+    "관리자에게",
+    "관리자 문의",
+)
+
+
+def _mentions_unknown(answer: str) -> bool:
+    """답변에 '정보를 찾지 못했다'·'담당자 연결' 같은 문구가 있는지"""
+    return any(phrase in answer for phrase in UNKNOWN_PHRASES)
 
 NOT_ANSWERED = {"answered": False, "answer": ""}
 
@@ -75,9 +107,14 @@ def answer_for_qa(title: str, content: str) -> dict:
 
     answered = (
         result.fromManual
+        and result.complete
         and not result.needsAdmin
+        and not _mentions_unknown(answer)
         and len(answer) >= MIN_ANSWER_LENGTH
         and answer != FALLBACK_ANSWER
     )
-    print(f"[QA 자동답변] answered={answered} fromManual={result.fromManual} needsAdmin={result.needsAdmin}")
+    print(
+        f"[QA 자동답변] answered={answered} fromManual={result.fromManual} complete={result.complete} "
+        f"needsAdmin={result.needsAdmin} unknownPhrase={_mentions_unknown(answer)}"
+    )
     return {"answered": answered, "answer": answer} if answered else NOT_ANSWERED
