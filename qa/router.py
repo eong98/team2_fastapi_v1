@@ -1,7 +1,8 @@
 import traceback
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from chatbot.ticket import require_server
 from qa.schema import QaAnswerRequest, QaAnswerResponse
 from qa.service import answer_for_qa
 
@@ -16,13 +17,15 @@ router = APIRouter(
 # ========================================
 
 
-@router.post("/ai-answer", response_model=QaAnswerResponse)
+@router.post("/ai-answer", response_model=QaAnswerResponse, dependencies=[Depends(require_server)])
 def qa_ai_answer(request: QaAnswerRequest):
     """
     1:1 문의 AI 자동 답변 — Spring(QaAiAnswerService)이 문의 등록 직후 백그라운드로 호출.
 
     챗봇 AI 상담과 같은 매뉴얼 검색·답변 생성을 쓰고,
     매뉴얼에 없는 내용이면 answered=False (Spring은 관리자 답변 대기로 둠).
+
+    티켓 검사가 켜져 있으면 Spring 서버 티켓이 있어야 호출됩니다 (아무나 LLM을 돌리지 못하게).
     """
     try:
         return answer_for_qa(request.title, request.content)

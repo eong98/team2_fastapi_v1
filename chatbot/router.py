@@ -6,7 +6,7 @@ chatbot/router.py
 아래에서 이 라우터에 포함시킵니다.
 """
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 import traceback
@@ -21,6 +21,7 @@ from chatbot.service import (
     summarize_title_in_background,
     warm_up_ai_models,
 )
+from chatbot.ticket import SERVER_SUBJECT, require_admin, require_session_access, ticket_enabled, verify_ticket
 from chatbot.ws_manager import ws_manager
 
 
@@ -41,7 +42,7 @@ def health():
     return {"status": "ok"}
 
 
-@router.post("/{sno}/summarize")
+@router.post("/{sno}/summarize", dependencies=[Depends(require_session_access)])
 def summarize(sno: str):
     """
     특정 세션의 대화 로그를 AI로 요약합니다.
@@ -61,7 +62,7 @@ def summarize(sno: str):
         raise HTTPException(status_code=500, detail=f"챗봇 대화 요약 실패: {str(e)}")
 
 
-@router.post("/{sno}/summarize-title")
+@router.post("/{sno}/summarize-title", dependencies=[Depends(require_session_access)])
 def summarize_title(sno: str, background_tasks: BackgroundTasks):
     """
     상담 종료 후 채팅 목록 제목만 AI 요약으로 바꿉니다. 백그라운드로 실행하고 바로 응답합니다.
@@ -71,7 +72,7 @@ def summarize_title(sno: str, background_tasks: BackgroundTasks):
     return {"accepted": True}
 
 
-@router.put("/{sno}/ai-start")
+@router.put("/{sno}/ai-start", dependencies=[Depends(require_session_access)])
 def ai_start(sno: str, background_tasks: BackgroundTasks):
     """
     AI 상담을 시작합니다.
@@ -89,7 +90,7 @@ def ai_start(sno: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"AI 상담 시작 실패: {str(e)}")
 
 
-@router.put("/{sno}/ai-end")
+@router.put("/{sno}/ai-end", dependencies=[Depends(require_session_access)])
 def ai_end(sno: str):
     """
     AI 상담 중단 구분선(고정 문구)을 저장합니다.
@@ -102,7 +103,7 @@ def ai_end(sno: str):
         raise HTTPException(status_code=500, detail=f"AI 상담 종료 처리 실패: {str(e)}")
 
 
-@router.post("/{sno}/ai-chat")
+@router.post("/{sno}/ai-chat", dependencies=[Depends(require_session_access)])
 async def ai_chat(sno: str, request: AiChatRequest):
     """
     AI 자유상담을 진행합니다.
@@ -129,11 +130,23 @@ async def chat_ws(
     websocket: WebSocket,
     mno: int | None = Query(default=None),
     gno: str | None = Query(default=None),
+    ticket: str | None = Query(default=None),
 ):
     """
     챗봇 실시간 알림용 WebSocket 엔드포인트입니다.
     프론트엔드가 앱 진입 시 연결을 맺어두면, AI 답변 완료 즉시 실시간 알림을 받습니다.
+
+    티켓 검사가 켜져 있으면(CHAT_TICKET_SECRET 설정) 누구의 알림을 받을지는
+    화면이 보낸 mno/gno가 아니라 Spring이 발급한 티켓의 주인으로 정합니다.
+    (예전엔 mno만 바꾸면 다른 회원의 알림을 받을 수 있었음 — chatbot/ticket.py 참고)
     """
+    if ticket_enabled():
+        subject = verify_ticket(ticket)
+        if subject is None or not subject.startswith(("m:", "g:")):  # 서버·관리자 티켓은 알림 대상이 아님
+            await websocket.close(code=1008)  # 티켓 없음·만료 → 연결 거부 (화면이 새 티켓으로 재연결)
+            return
+        kind, _, value = subject.partition(":")
+        mno, gno = (int(value), None) if kind == "m" else (None, value)
     await ws_manager.connect(websocket, mno, gno)
     try:
         while True:
@@ -146,5 +159,5 @@ async def chat_ws(
         ws_manager.disconnect(websocket, mno, gno)
 
 
-# 옵션메뉴 관리 API (/api/chatbot/manual-doc/*)
-router.include_router(manual_router)
+# 옵션메뉴 관리 API (/api/chatbot/manual-doc/*) — 관리자 화면 전용: 티켓 검사가 켜져 있으면 관리자 티켓 필요
+router.include_router(manual_router, dependencies=[Depends(require_admin)])
