@@ -12,6 +12,7 @@ from chatbot.router import router as chatbot_router
 from shopmap.router import router as shopmap_router
 from qa.router import router as qa_router
 from chatstats.router import router as chat_stats_router
+from faq.router import router as faq_router
 
 # FastAPI 앱 생성
 app = FastAPI(
@@ -59,6 +60,9 @@ app.include_router(qa_router)
 
 # 챗봇 상담 만족도 AI 분석 (요약 + 긍정/부정 점수)
 app.include_router(chat_stats_router)
+
+# FAQ AI 추천 (자주 들어오는 문의를 묶어 FAQ 후보 생성)
+app.include_router(faq_router)
 
 
 # ==============================
