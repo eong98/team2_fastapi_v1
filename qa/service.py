@@ -11,10 +11,14 @@ qa/service.py
   - 인사·뜻 모를 입력·관리자 연결 요청 (LLM 호출 없음)
   - 매뉴얼 검색 결과가 문턱(RELEVANCE_THRESHOLD)을 넘는 게 하나도 없음 (LLM 호출 없음)
   - AI가 매뉴얼 내용으로 답하지 않았거나(fromManual=False) 관리자 확인이 필요하다고 판단(needsAdmin=True)
-  - 질문의 일부라도 정보를 찾지 못함 (complete=False 또는 답변에 "찾지 못했습니다"·"연결해 드릴까요" 같은 문구)
-    → 게시판 답변은 채팅처럼 이어서 물어볼 수 없으므로, 일부만 답하고 나머지를 모른다고 하는 답변은 등록하지 않음
-  - 답변이 비었거나 폴백 문구
+  - 답할 수 있는 부분이 하나도 없음 (답변이 비었거나 폴백 문구)
+
+질문 중 일부만 매뉴얼에 있으면, 답할 수 있는 부분만 답하고 나머지는 언급하지 않습니다.
+(게시판 답변은 채팅처럼 이어서 물어볼 수 없으므로 "찾지 못했습니다", "담당자에게 연결해 드릴까요"
+ 같은 문장은 넣지 않음 — 프롬프트로 지시하고, 그래도 들어오면 그 문장만 지움)
 """
+
+import re
 
 from pydantic import Field
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -36,24 +40,28 @@ class QaAnswer(ChatAnswer):
 
     fromManual: bool = Field(
         description=(
-            "답변 내용을 [참고 자료]에 있는 정보로 작성했으면 true. "
-            "인사, 일상대화·무관한 질문 안내, 정보를 찾지 못했다는 안내, 관리자 연결 안내면 false"
-        )
-    )
-
-
-    complete: bool = Field(
-        description=(
-            "질문에서 물어본 모든 내용을 [참고 자료]로 답했으면 true. "
-            "질문 중 일부라도 정보를 찾지 못했거나, 찾지 못했다는 안내·담당자 연결 안내를 답변에 넣었으면 false"
+            "질문 중 일부라도 [참고 자료]에 있는 정보로 답했으면 true. "
+            "[참고 자료]로 답한 내용이 하나도 없으면(인사, 무관한 질문 안내, 관리자 연결 안내뿐이면) false"
         )
     )
 
 
 structured_qa_llm = llm.with_structured_output(QaAnswer)
 
-# 답변에 이런 말이 들어 있으면 "정보를 찾지 못한 부분이 있다"는 뜻 → 등록하지 않음
-# (AI가 complete를 true로 잘못 표시한 경우를 한 번 더 걸러 내는 안전장치)
+# 게시판 문의 답변 규칙 — 챗봇 프롬프트(build_system_prompt) 뒤에 덧붙임
+QA_RULES = """
+
+[게시판 문의 답변 규칙 — 위 지침보다 우선]
+- 이 답변은 채팅이 아니라 1:1 문의 게시판에 등록됩니다. 고객이 바로 이어서 질문할 수 없습니다.
+- 질문에 여러 내용이 있으면, [참고 자료]로 답할 수 있는 부분만 답하세요.
+- 답할 수 없는 부분은 아예 언급하지 마세요.
+  "정보를 찾지 못했습니다", "담당자에게 연결해 드릴까요", "관리자에게 문의해 주세요" 같은 문장을 쓰지 마세요.
+- 일부라도 [참고 자료]로 답했으면 fromManual=true, needsAdmin=false 로 표시하세요.
+- 답할 수 있는 부분이 하나도 없을 때만 fromManual=false 로 표시하세요.
+"""
+
+# 이런 말이 들어 있는 문장은 "못 찾은 부분에 대한 안내"라서 답변에서 지움
+# (프롬프트로 쓰지 말라고 했지만 그래도 들어오는 경우를 걸러 내는 안전장치)
 UNKNOWN_PHRASES = (
     "찾지 못했",
     "찾을 수 없",
@@ -64,15 +72,25 @@ UNKNOWN_PHRASES = (
     "답변드리기 어렵",
     "답변해 드리기 어렵",
     "연결해 드릴까요",
-    "담당자",
+    "담당자에게",
+    "담당자 연결",
     "관리자에게",
     "관리자 문의",
 )
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
-def _mentions_unknown(answer: str) -> bool:
-    """답변에 '정보를 찾지 못했다'·'담당자 연결' 같은 문구가 있는지"""
-    return any(phrase in answer for phrase in UNKNOWN_PHRASES)
+
+def _drop_unknown_sentences(answer: str) -> str:
+    """답변에서 '정보를 찾지 못했다'·'담당자 연결' 문장만 지우고 나머지는 그대로 둡니다."""
+    kept_lines = []
+    for line in answer.splitlines():
+        sentences = [s for s in _SENTENCE_END.split(line.strip()) if s]
+        kept = [s for s in sentences if not any(phrase in s for phrase in UNKNOWN_PHRASES)]
+        if kept:
+            kept_lines.append(" ".join(kept))
+    return "\n".join(kept_lines).strip()
+
 
 NOT_ANSWERED = {"answered": False, "answer": ""}
 
@@ -99,22 +117,18 @@ def answer_for_qa(title: str, content: str) -> dict:
         print("[QA 자동답변] answered=False (관련 매뉴얼 없음)")
         return NOT_ANSWERED
 
-    # 3. 챗봇과 같은 프롬프트로 답변 생성 + 매뉴얼로 답했는지 판단
+    # 3. 챗봇과 같은 프롬프트 + 게시판 답변 규칙(답할 수 있는 부분만)으로 답변 생성
     result = structured_qa_llm.invoke(
-        [SystemMessage(content=build_system_prompt(context)), HumanMessage(content=message)]
+        [SystemMessage(content=build_system_prompt(context) + QA_RULES), HumanMessage(content=message)]
     )
     answer = scrub_internal(strip_urls(result.answer or "")).strip()
+    answer = _drop_unknown_sentences(answer)  # 못 찾은 부분에 대한 안내 문장은 지움 (답한 부분만 남김)
 
     answered = (
         result.fromManual
-        and result.complete
         and not result.needsAdmin
-        and not _mentions_unknown(answer)
         and len(answer) >= MIN_ANSWER_LENGTH
         and answer != FALLBACK_ANSWER
     )
-    print(
-        f"[QA 자동답변] answered={answered} fromManual={result.fromManual} complete={result.complete} "
-        f"needsAdmin={result.needsAdmin} unknownPhrase={_mentions_unknown(answer)}"
-    )
+    print(f"[QA 자동답변] answered={answered} fromManual={result.fromManual} needsAdmin={result.needsAdmin}")
     return {"answered": answered, "answer": answer} if answered else NOT_ANSWERED
