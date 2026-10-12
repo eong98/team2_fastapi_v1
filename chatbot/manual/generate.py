@@ -78,12 +78,20 @@ def _run_generation(rep: _Reporter) -> dict:
             rep._current = None
             continue
         rep.step(key, f"[{doc['filename']}] 벡터화 중 (AI자유상담 검색 반영)")
+        
         try:
             _add_doc_to_vectorstore(doc["uploadPath"], doc["no"])
             rep.done(key, f"[{doc['filename']}] 벡터화 완료", 1 + 9 * (i + 1) / len(docs))
-        except Exception:
-            vectorize_failed_docs.append({"no": doc["no"], "filename": doc["filename"]})
-            rep.fail(key, f"[{doc['filename']}] 벡터화 실패")
+        except Exception as e:
+            # 💡 에러 메시지(str(e))를 함께 수집하여 어떤 이유로 실패했는지 추적 가능하게 변경
+            error_msg = str(e)
+            vectorize_failed_docs.append({
+                "no": doc["no"], 
+                "filename": doc["filename"],
+                "reason": error_msg
+            })
+            print(f"⚠ 벡터화 실패 [{doc['filename']}]: {error_msg}")
+            rep.fail(key, f"[{doc['filename']}] 벡터화 실패: {error_msg}")
         rep._current = None
 
     # 2) 섹션 분석 (10~20) — 목차가 있으면 목차 섹션 그대로, 없으면 벡터DB 청크로 LLM이 주제 분석
