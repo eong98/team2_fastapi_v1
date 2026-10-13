@@ -275,6 +275,8 @@ def build_system_prompt(context: str) -> str:
    - 일상 대화나 개인적인 질문에는 답변하기 어렵다는 점을 친절히 양해 구하고, **Allimio 서비스와 관련된 내용에 대해서만 질문해 달라고 안내**하세요.
    - 예시: "죄송합니다, 저는 Allimio 서비스 상담을 돕는 AI 알리미입니다. 일상 대화나 날씨 질문에는 답변해 드리기 어려우니, Allimio 서비스 이용이나 요금제 등 관련 문의를 부탁드립니다!"
    - `needsAdmin`: false
+   - 주의: 문장에 개인 사정(매장 공사, 휴업, 폐업, 이사, 양도, 출장 등)이 섞여 있어도 **묻는 내용이 구독·결제·환불·매장·CCTV·알림·계정·직원 등 Allimio 이용에 관한 것이면 2번이 아닙니다.** 3번 또는 4번으로 처리하세요.
+     (예: "공사로 한 달 영업을 쉬는데 그동안 구독을 일시정지할 수 있나요?", "매장을 양도하는데 구독권도 넘길 수 있나요?" → 서비스 문의. 자료에 없으면 4번)
 
 3. **Allimio 서비스 관련 문의이며 [참고 자료]에 연관된 내용(구독권, 요금 등)이 일부라도 있는 경우**:
    - 참고 자료를 기반으로 핵심 내용을 요약/재구성하여 5줄 이하로 알맞게 설명하세요.
@@ -302,6 +304,24 @@ def build_system_prompt(context: str) -> str:
 """
 
 
+# 서비스 이용에 관한 낱말 — 하나라도 들어 있으면 "일상 대화"로 넘기지 않게 프롬프트에 판별 결과를 덧붙임.
+# (프롬프트 지침만으로는 "공사로 영업을 쉬는데 구독을 일시정지할 수 있나요?"처럼
+#  개인 사정이 섞인 서비스 문의를 일상 대화로 잘못 답하는 경우가 있었음)
+SERVICE_KEYWORD_PATTERN = re.compile(
+    "구독|결제|환불|요금|할부|영수증|세금계산서|갱신|연장|해지|일시정지|양도|명의"
+    "|매장|점포|CCTV|씨씨티비|카메라|영상|녹화|알림|감지|이상행동|도면|관제"
+    "|회원|가입|탈퇴|계정|아이디|비밀번호|로그인|직원|초대|점주"
+    "|문의|공지|FAQ|고객센터|설문|챗봇|상담|Allimio|알리미오|올리미오",
+    re.IGNORECASE,
+)
+SERVICE_HINT = """
+
+[판별 결과 — 위 지침보다 우선]
+이번 메시지는 Allimio 서비스 이용에 관한 문의로 확인되었습니다.
+2번(일상 대화) 안내를 쓰지 마세요. [참고 자료]에 답이 있으면 3번, 없으면 4번으로 처리하세요.
+"""
+
+
 # 답변 생성 노드
 def generate_node(state: State):
     """
@@ -318,6 +338,8 @@ def generate_node(state: State):
         print(f"  - {type(h).__name__}: {h.content[:50]}")
 
     system_prompt = build_system_prompt(context)
+    if SERVICE_KEYWORD_PATTERN.search(message):
+        system_prompt += SERVICE_HINT
 
     result = structured_answer_llm.invoke(
         [SystemMessage(content=system_prompt), *history, HumanMessage(content=message)]

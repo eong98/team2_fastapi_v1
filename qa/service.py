@@ -58,6 +58,11 @@ QA_RULES = """
   "정보를 찾지 못했습니다", "담당자에게 연결해 드릴까요", "관리자에게 문의해 주세요" 같은 문장을 쓰지 마세요.
 - 일부라도 [참고 자료]로 답했으면 fromManual=true, needsAdmin=false 로 표시하세요.
 - 답할 수 있는 부분이 하나도 없을 때만 fromManual=false 로 표시하세요.
+- 고객은 **이미 이 문의를 접수한 상태**입니다. "문의를 남겨 주세요", "[문의하기] 버튼을 눌러 주세요",
+  "고객센터 1:1 문의로 요청해 주세요"처럼 다시 문의하라는 안내를 쓰지 마세요.
+  [참고 자료]에 "문의로 요청하면 처리된다"고 되어 있는 일(탈퇴, 정지 해제, CCTV 등록·변경 등)은
+  "화면에서 직접 할 수는 없고 담당자가 처리합니다. 이 문의로 접수되었으니 담당자가 확인한 뒤 답변드리겠습니다."처럼
+  지금 남긴 문의로 처리된다는 뜻으로 바꿔 쓰세요.
 """
 
 # 이런 말이 들어 있는 문장은 "못 찾은 부분에 대한 안내"라서 답변에서 지움
@@ -78,6 +83,14 @@ UNKNOWN_PHRASES = (
     "관리자 문의",
 )
 
+# 이미 접수된 문의인데 "문의를 남겨 달라"고 다시 시키는 문장 — 지우고 아래 맺음말로 바꿈
+# (프롬프트에서 막았지만 매뉴얼 문장을 그대로 옮기는 경우를 걸러 내는 안전장치)
+REASK_PATTERN = re.compile(
+    r"(문의하기\]?\s*(버튼|를|을)|문의(사항)?(를|을)\s*(남겨|남기|작성|접수|등록)|문의(사항)?(로|으로)\s*(요청|남겨|알려|연락|접수)"
+    r"|고객센터(로|에)\s*(문의|요청|연락))"
+)
+REASK_CLOSING = "남겨 주신 이 문의는 담당자가 확인한 뒤 답변드리겠습니다."
+
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -90,6 +103,25 @@ def _drop_unknown_sentences(answer: str) -> str:
         if kept:
             kept_lines.append(" ".join(kept))
     return "\n".join(kept_lines).strip()
+
+
+def _replace_reask_sentences(answer: str) -> str:
+    """
+    "문의를 남겨 주세요" 같은 문장을 지우고, 지운 것이 있으면 끝에 맺음말 한 줄을 붙입니다.
+    지우고 나서 남는 내용이 없으면 빈 문자열(= AI 답변을 달지 않음)을 돌려줍니다.
+    """
+    removed = False
+    kept_lines = []
+    for line in answer.splitlines():
+        sentences = [s for s in _SENTENCE_END.split(line.strip()) if s]
+        kept = [s for s in sentences if not REASK_PATTERN.search(s)]
+        removed = removed or len(kept) != len(sentences)
+        if kept:
+            kept_lines.append(" ".join(kept))
+    body = "\n".join(kept_lines).strip()
+    if not removed:
+        return body
+    return f"{body}\n{REASK_CLOSING}" if body else ""
 
 
 NOT_ANSWERED = {"answered": False, "answer": ""}
@@ -123,6 +155,7 @@ def answer_for_qa(title: str, content: str) -> dict:
     )
     answer = scrub_internal(strip_urls(result.answer or "")).strip()
     answer = _drop_unknown_sentences(answer)  # 못 찾은 부분에 대한 안내 문장은 지움 (답한 부분만 남김)
+    answer = _replace_reask_sentences(answer)  # 이미 접수된 문의에 "문의를 남겨 달라"는 문장은 맺음말로 바꿈
 
     answered = (
         result.fromManual

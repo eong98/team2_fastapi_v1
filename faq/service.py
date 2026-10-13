@@ -31,9 +31,11 @@ from faq.schema import FaqSuggestRequest
 llm = get_llm().model_copy(update={"reasoning": False})
 
 # 같은 질문으로 보는 유사도 (코사인, 0~1) — 높일수록 묶음이 잘게 나뉨
-# bge-m3로 재 보면 같은 주제의 문의끼리는 0.57~0.80, 다른 주제끼리는 0.54 이하로 나와서 그 사이로 잡음.
-# 경계가 좁아 다른 질문이 섞일 수 있으므로, 묶은 뒤 LLM이 "같은 질문이 아니면 쓰지 않음"으로 한 번 더 거름.
-SAME_QUESTION_SIMILARITY = 0.56
+# bge-m3는 한국어 짧은 글끼리 기본 유사도가 높게 나온다. 실제 문의 23건으로 재 보면
+# 같은 질문끼리는 0.71~0.89, 주제만 비슷한 다른 질문(매장 추가 ↔ CCTV 추가, 구독 취소 ↔ 결제 수단)은 0.56~0.68.
+# 0.56으로 두면 구독·결제·가입 문의 10건이 한 묶음으로 뭉쳐 FAQ 후보가 줄어들어서 그 사이인 0.70으로 잡음.
+# 그래도 다른 질문이 섞일 수 있으므로, 묶은 뒤 LLM이 "같은 질문이 아니면 쓰지 않음"으로 한 번 더 거름.
+SAME_QUESTION_SIMILARITY = 0.70
 # 이미 있는 FAQ와 같은 내용으로 보는 유사도 (조금 더 엄격하게 — 비슷한 주제의 새 질문까지 빼지 않도록)
 EXISTING_FAQ_SIMILARITY = 0.68
 # FAQ 후보가 되려면 비슷한 문의가 최소 몇 건이어야 하는지
@@ -191,23 +193,30 @@ def _draft_faq(members) -> _FaqDraft | None:
 def _group_by_similarity(vectors: list[list[float]]) -> list[list[int]]:
     """
     뜻이 가까운 문의끼리 묶는다.
-    문의를 하나씩 보면서, 지금까지 만든 묶음 중 "그 묶음에 든 문의들과의 평균 유사도"가 가장 높은 곳에 넣고
-    충분히 가까운 묶음이 없으면 새 묶음을 만든다. (문의 수가 수백 건 수준이라 이 정도로 충분)
+    문의 하나하나를 묶음으로 두고 시작해서, "두 묶음에 든 문의들 사이의 평균 유사도"가 가장 높은 두 묶음을
+    합치는 일을 되풀이한다. 기준(SAME_QUESTION_SIMILARITY) 이상인 쌍이 없으면 끝.
+    (문의 수가 수백 건 수준이라 이 정도로 충분)
 
-    묶음의 중심 벡터와 비교하면, 문의가 쌓일수록 중심이 두루뭉술해져 다른 주제의 문의까지 끌려 들어온다
-    (구독 취소 묶음에 비밀번호 문의가 섞임). 그래서 묶음 안의 문의 하나하나와 비교한 평균을 쓴다.
+    - 문의를 들어온 순서대로 기존 묶음에 넣는 방식은 순서에 따라 결과가 달라지고,
+      먼저 생긴 묶음이 주제만 비슷한 문의를 끌어들인다(카메라 고장 묶음에 직원 초대 문의가 섞임).
+      가장 가까운 것부터 합치면 순서와 상관없이 같은 결과가 나온다.
+    - 묶음의 중심 벡터와 비교하면 문의가 쌓일수록 중심이 두루뭉술해지므로,
+      묶음 안의 문의 하나하나끼리 비교한 평균을 쓴다.
     """
-    groups: list[list[int]] = []
-    for idx, vec in enumerate(vectors):
-        best, best_sim = -1, SAME_QUESTION_SIMILARITY
-        for g, members in enumerate(groups):
-            sim = sum(_dot(vec, vectors[m]) for m in members) / len(members)
-            if sim >= best_sim:
-                best, best_sim = g, sim
-        if best < 0:
-            groups.append([idx])
-        else:
-            groups[best].append(idx)
+    groups: list[list[int]] = [[i] for i in range(len(vectors))]
+    # 문의끼리의 유사도는 한 번만 계산
+    sims = [[_dot(a, b) for b in vectors] for a in vectors]
+    while len(groups) > 1:
+        best_sim, best_pair = SAME_QUESTION_SIMILARITY, None
+        for x in range(len(groups)):
+            for y in range(x + 1, len(groups)):
+                sim = sum(sims[i][j] for i in groups[x] for j in groups[y]) / (len(groups[x]) * len(groups[y]))
+                if sim >= best_sim:
+                    best_sim, best_pair = sim, (x, y)
+        if best_pair is None:
+            break
+        x, y = best_pair
+        groups[x].extend(groups.pop(y))
     return groups
 
 
